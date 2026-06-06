@@ -19,7 +19,7 @@ benchmark-1-onnx-inference-app/
 ├── pom.xml
 ├── Dockerfile
 ├── docker-compose.yml
-├── src/main/java/com/opthub/bench/onnx/
+├── src/main/java/com/palaashatri/bench/onnx/
 │   ├── OnnxInferenceApplication.java
 │   ├── config/
 │   │   ├── OnnxSessionConfig.java

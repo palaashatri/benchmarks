@@ -22,7 +22,7 @@ benchmark-3-autoscaling-api-app/
 │   ├── service.yml
 │   ├── hpa.yml
 │   └── configmap.yml
-├── src/main/java/com/opthub/bench/catalog/
+├── src/main/java/com/palaashatri/bench/catalog/
 │   ├── CatalogApplication.java
 │   ├── controller/
 │   │   ├── ProductController.java

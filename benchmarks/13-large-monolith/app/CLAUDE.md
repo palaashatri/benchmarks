@@ -20,7 +20,7 @@ Salesforce and Unity.
 benchmark-5-large-monolith-app/
 ├── pom.xml
 ├── Dockerfile
-├── src/main/java/com/opthub/bench/monolith/
+├── src/main/java/com/palaashatri/bench/monolith/
 │   ├── MonolithApplication.java
 │   ├── customer/                   # 20+ entities, services, repos, controllers
 │   │   ├── entity/

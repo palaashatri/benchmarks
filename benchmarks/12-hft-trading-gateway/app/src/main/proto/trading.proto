@@ -1,0 +1,8 @@
+syntax = "proto3";
+package com.palaashatri.bench.b12_hft_trading_gateway;
+service TradingGateway { rpc SubmitOrder(OrderRequest) returns (OrderAck); rpc CancelOrder(CancelRequest) returns (OrderAck); rpc GetOrderStatus(StatusRequest) returns (OrderStatus); }
+message OrderRequest { string symbol = 1; string side = 2; int64 quantity = 3; int64 price_nanos = 4; }
+message CancelRequest { string order_id = 1; }
+message StatusRequest { string order_id = 1; }
+message OrderAck { string order_id = 1; bool accepted = 2; string reason = 3; }
+message OrderStatus { string order_id = 1; string status = 2; }

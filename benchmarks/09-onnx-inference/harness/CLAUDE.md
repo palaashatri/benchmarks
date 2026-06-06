@@ -19,7 +19,7 @@ Completely separate from the application — connects only via HTTP.
 benchmark-1-onnx-inference-harness/
 ├── pom.xml
 ├── docker-compose.yml          # Prometheus + Grafana + app
-├── src/main/scala/com/opthub/bench/harness/
+├── src/main/scala/com/palaashatri/bench/harness/
 │   ├── ColdStartSimulation.scala
 │   ├── SteadyStateSimulation.scala
 │   ├── BurstLoadSimulation.scala

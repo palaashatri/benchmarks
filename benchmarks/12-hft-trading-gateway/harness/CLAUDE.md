@@ -18,7 +18,7 @@ HTTP overhead that swamps the signal.
 ```
 benchmark-4-trading-gateway-harness/
 ├── pom.xml
-├── src/main/java/com/opthub/bench/harness/trading/
+├── src/main/java/com/palaashatri/bench/harness/trading/
 │   ├── TradingLoadGenerator.java
 │   ├── OrderGenerator.java
 │   ├── LatencyCollector.java

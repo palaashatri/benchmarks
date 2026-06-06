@@ -1,0 +1,26 @@
+openapi: 3.0.3
+info:
+  title: Fintech Ledger Service
+  version: 0.1.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /bench/{profile}/{id}:
+    get:
+      parameters:
+        - name: profile
+          in: path
+          required: true
+          schema: {type: string}
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: deterministic benchmark response}

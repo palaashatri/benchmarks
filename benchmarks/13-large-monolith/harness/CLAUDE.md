@@ -23,7 +23,7 @@ HTTP only.
 benchmark-5-large-monolith-harness/
 ├── pom.xml
 ├── docker-compose.yml              # Prometheus + Grafana + app stack
-├── src/main/scala/com/opthub/bench/harness/
+├── src/main/scala/com/palaashatri/bench/harness/
 │   ├── WarmupCurveSimulation.scala     # captures throughput ramp from cold
 │   ├── SteadyStateSimulation.scala
 │   └── RestartCycleSimulation.scala    # kill + restart + measure loop

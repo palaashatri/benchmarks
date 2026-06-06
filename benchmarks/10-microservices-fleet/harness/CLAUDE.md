@@ -20,7 +20,7 @@ benchmark-2-microservices-fleet-harness/
 │   └── monitoring/
 │       ├── prometheus-config.yml
 │       └── grafana-dashboards/
-├── src/main/scala/com/opthub/bench/harness/
+├── src/main/scala/com/palaashatri/bench/harness/
 │   ├── OrderFlowSimulation.scala
 │   ├── CatalogBrowseSimulation.scala
 │   ├── RollingDeploySimulation.scala

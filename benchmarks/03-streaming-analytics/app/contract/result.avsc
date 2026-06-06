@@ -1,0 +1,1 @@
+{"type":"record","name":"WindowResult","fields":[{"name":"window","type":"string"},{"name":"key","type":"string"},{"name":"count","type":"long"},{"name":"sum","type":"double"}]}

@@ -24,7 +24,7 @@ benchmark-4-trading-gateway-app/
 ├── Dockerfile
 ├── src/main/proto/
 │   └── trading.proto
-├── src/main/java/com/opthub/bench/trading/
+├── src/main/java/com/palaashatri/bench/trading/
 │   ├── TradingGatewayApplication.java
 │   ├── server/
 │   │   └── TradingGrpcServer.java

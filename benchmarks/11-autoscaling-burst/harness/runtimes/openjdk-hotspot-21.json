@@ -1,0 +1,5 @@
+{
+  "runtime": "openjdk-hotspot-21",
+  "java": "java",
+  "active": true
+}
