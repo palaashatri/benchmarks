@@ -1,10 +1,18 @@
 # CLAUDE.md — JVM Benchmark Suite (suite root)
 
-This repository is a suite of **8 real-world JVM benchmark projects**. Each
-benchmark stresses a different dimension of JVM behaviour (startup, warmup,
-throughput, tail latency, GC, JIT, FFI, concurrency, polyglot) under
-operationally realistic conditions, so the numbers are decision-relevant
-rather than synthetic scores.
+This repository is a suite of **13 real-world JVM benchmark projects** across
+two cohorts. Each benchmark stresses a different dimension of JVM behaviour
+(startup, warmup, throughput, tail latency, GC, JIT, FFI, concurrency,
+polyglot) under operationally realistic conditions, so the numbers are
+decision-relevant rather than synthetic scores.
+
+- **Cohort A — benchmarks 01–08:** Gradle / Kotlin DSL, JDK 21 LTS, suite-wide
+  conventions apply in full (sections 3–8 below).
+- **Cohort B — benchmarks 09–13:** Maven, JDK 17 (09–11, 13) or JDK 25 (12),
+  load tools vary per benchmark (Gatling, k6, custom Java generator). The
+  app↔harness contract rules (sections 0, 4) and observability requirements
+  (section 5) still apply; build-tool and JDK conventions in section 3 are
+  superseded by each benchmark's own CLAUDE.md.
 
 > **Read this file first, then the `CLAUDE.md` inside the specific benchmark
 > you are working in.** This root file owns the conventions shared across all
@@ -47,12 +55,20 @@ Everything else below is in service of those two rules.
 jvm-bench-suite/
   CLAUDE.md                      <- you are here (suite-wide)
   benchmarks/
+    # Cohort A — Gradle / JDK 21
     01-fintech-ledger/
       CLAUDE.md                  <- benchmark root: scenario, contract, how the pieces fit
       app/      CLAUDE.md         <- the shippable application (no harness deps)
       harness/  CLAUDE.md         <- load gen, metrics capture, KPI extraction, runtimes
     02-microservices-mesh/ ...
     ... 03..08
+
+    # Cohort B — Maven / JDK 17–25
+    09-onnx-inference/            <- Spring Boot + ONNX ML Inference (JDK 17, Gatling)
+    10-microservices-fleet/       <- 5-service fleet + rolling deploys (JDK 17, Gatling)
+    11-autoscaling-burst/         <- Catalog API + HPA burst traffic (JDK 17, k6)
+    12-hft-trading-gateway/       <- gRPC order gateway, value classes (JDK 25, custom gen)
+    13-large-monolith/            <- 500+ bean monolith warm-up cycles (JDK 17, Gatling)
 ```
 
 Each `app/` is its own self-contained Gradle build (its own `settings.gradle.kts`
@@ -60,7 +76,10 @@ and wrapper) so it can be copied out wholesale. Each `harness/` is a separate
 Gradle build. They are siblings, not a parent/child Gradle multi-project — that
 physical separation enforces rule #1 at the build level.
 
-## 3. Build & tooling conventions
+## 3. Build & tooling conventions (Cohort A — benchmarks 01–08)
+
+> Cohort B benchmarks (09–13) use Maven and different JDK targets; their own
+> CLAUDE.md files are authoritative for build commands and toolchain config.
 
 - **Gradle (Kotlin DSL)** with the wrapper (`./gradlew`). Pin the JDK with the
   Gradle toolchain block — never rely on the machine's `JAVA_HOME`:
