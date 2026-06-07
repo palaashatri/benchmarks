@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-1-onnx-inference-app
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test scaffold, not the full benchmark application described below. The scaffold exists so `run.sh build` / `run.sh test` and the harness/result pipeline can be exercised without external services. The full implementation described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 A production-grade Spring Boot REST service that performs ML inference using

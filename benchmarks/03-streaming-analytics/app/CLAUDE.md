@@ -1,5 +1,8 @@
 # CLAUDE.md — Streaming Analytics Pipeline · APPLICATION
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test scaffold, not the full benchmark application described below. The scaffold exists so `run.sh build` / `run.sh test` and the harness/result pipeline can be exercised without external services. The full implementation described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 This is the **shippable application** for benchmark 03. It is a standalone
 project: it must build, test, and run on **OpenJDK 21** with no benchmark
 harness anywhere on its classpath, and it can be lifted out of the suite and
