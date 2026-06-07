@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Polyglot Service Baseline contract
+  title: ETL Batch Job contract
   version: 0.2.0
 paths:
   /health:
@@ -19,15 +19,15 @@ paths:
     get:
       responses:
         '200': {description: actuator prometheus metrics}
-  /rules/evaluate:
-    post:
-      responses:
-        '200': {description: Evaluate pricing rules}
-  /rules/modes:
+  /job/schema:
     get:
       responses:
-        '200': {description: Read available rule modes}
-  /scripts/validate:
+        '200': {description: Read ETL schemas}
+  /job/run:
     post:
       responses:
-        '200': {description: Validate script payload}
+        '200': {description: Run local ETL job}
+  /job/status:
+    get:
+      responses:
+        '200': {description: Read latest job status}

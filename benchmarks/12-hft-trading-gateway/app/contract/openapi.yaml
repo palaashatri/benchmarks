@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Polyglot Service Baseline contract
+  title: HFT Trading Gateway contract
   version: 0.2.0
 paths:
   /health:
@@ -19,15 +19,15 @@ paths:
     get:
       responses:
         '200': {description: actuator prometheus metrics}
-  /rules/evaluate:
+  /grpc/SubmitOrder:
     post:
       responses:
-        '200': {description: Evaluate pricing rules}
-  /rules/modes:
+        '200': {description: Submit JSON order over local gRPC-shaped shim}
+  /grpc/CancelOrder:
+    post:
+      responses:
+        '200': {description: Cancel JSON order over local shim}
+  /grpc/GetOrderStatus/{orderId}:
     get:
       responses:
-        '200': {description: Read available rule modes}
-  /scripts/validate:
-    post:
-      responses:
-        '200': {description: Validate script payload}
+        '200': {description: Read order status over local shim}

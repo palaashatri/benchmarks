@@ -5,6 +5,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -19,6 +20,7 @@ public final class BenchmarkHarness {
             "app_db_ms":0, "fraud_api_ms":0, "warmup_stable_s":0
             """.strip();
     private static final String[] PROFILES = new String[]{"steady", "salary-day-burst", "campaign-spike"};
+    private static final RequestSpec[] REQUESTS = new RequestSpec[]{new RequestSpec("GET", "/accounts/1001/balance", "{}"), new RequestSpec("GET", "/accounts/1001/transactions", "{}"), new RequestSpec("POST", "/transfers", "{\"from\":\"1001\",\"to\":\"1002\",\"amount_cents\":125}"), new RequestSpec("GET", "/health", "{}")};
 
     private BenchmarkHarness() { }
 
@@ -39,15 +41,20 @@ public final class BenchmarkHarness {
 
     static Result run(String baseUrl, String profile, int requests, long seed) throws InterruptedException {
         HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
-        Random random = new Random(seed);
+        Random random = new Random(seed ^ profile.hashCode());
         long[] latenciesMs = new long[Math.max(1, requests)];
         int ok = 0;
         for (int i = 0; i < latenciesMs.length; i++) {
-            String path = pickPath(profile, random, i);
-            HttpRequest req = HttpRequest.newBuilder(URI.create(baseUrl + path)).timeout(Duration.ofSeconds(5)).GET().build();
+            RequestSpec spec = REQUESTS[Math.floorMod(i + random.nextInt(REQUESTS.length), REQUESTS.length)];
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + spec.path())).timeout(Duration.ofSeconds(5));
+            if ("POST".equals(spec.method())) {
+                builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(spec.body(), StandardCharsets.UTF_8));
+            } else {
+                builder.GET();
+            }
             long start = System.nanoTime();
             try {
-                HttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> res = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
                 if (res.statusCode() >= 200 && res.statusCode() < 500) {
                     ok++;
                 }
@@ -60,16 +67,6 @@ public final class BenchmarkHarness {
         double elapsedSeconds = Math.max(0.001D, Arrays.stream(latenciesMs).sum() / 1000.0D);
         double throughput = latenciesMs.length / elapsedSeconds;
         return new Result(profile, latenciesMs.length, ok, throughput, pct(latenciesMs, 50.0D), pct(latenciesMs, 99.0D), pct(latenciesMs, 99.9D), pct(latenciesMs, 99.99D));
-    }
-
-    private static String pickPath(String profile, Random r, int i) {
-        return switch (Math.floorMod(profile.hashCode() + i, 5)) {
-            case 0 -> "/health";
-            case 1 -> "/metrics";
-            case 2 -> "/api/v1/products/" + (1 + r.nextInt(50_000));
-            case 3 -> "/accounts/" + (1 + r.nextInt(1_000)) + "/balance";
-            default -> "/bench/" + profile + "/" + i;
-        };
     }
 
     private static long pct(long[] v, double p) {
@@ -91,6 +88,8 @@ public final class BenchmarkHarness {
         }
         return out;
     }
+
+    record RequestSpec(String method, String path, String body) { }
 
     record Result(String profile, int requests, int ok, double throughput, long p50, long p99, long p999, long p9999) {
         String toJson() {

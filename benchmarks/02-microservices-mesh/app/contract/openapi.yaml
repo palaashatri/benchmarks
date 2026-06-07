@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: Event-Driven Microservices Mesh
-  version: 0.1.0
+  title: Event-Driven Microservices Mesh contract
+  version: 0.2.0
 paths:
   /health:
     get:
@@ -11,16 +11,23 @@ paths:
     get:
       responses:
         '200': {description: prometheus metrics}
-  /bench/{profile}/{id}:
+  /actuator/health:
     get:
-      parameters:
-        - name: profile
-          in: path
-          required: true
-          schema: {type: string}
-        - name: id
-          in: path
-          required: true
-          schema: {type: string}
       responses:
-        '200': {description: deterministic benchmark response}
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /events:
+    post:
+      responses:
+        '200': {description: Ingest and enrich event}
+  /flows/{id}:
+    get:
+      responses:
+        '200': {description: Read flow state}
+  /notifications/stub:
+    post:
+      responses:
+        '200': {description: Record notification attempt}

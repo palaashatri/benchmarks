@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: Large Monolith
-  version: 0.1.0
+  title: Large Monolith contract
+  version: 0.2.0
 paths:
   /health:
     get:
@@ -11,16 +11,23 @@ paths:
     get:
       responses:
         '200': {description: prometheus metrics}
-  /bench/{profile}/{id}:
+  /actuator/health:
     get:
-      parameters:
-        - name: profile
-          in: path
-          required: true
-          schema: {type: string}
-        - name: id
-          in: path
-          required: true
-          schema: {type: string}
       responses:
-        '200': {description: deterministic benchmark response}
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /api/customers/{id}:
+    get:
+      responses:
+        '200': {description: Read customer graph}
+  /api/orders:
+    post:
+      responses:
+        '200': {description: Create monolith order}
+  /api/reports/daily:
+    get:
+      responses:
+        '200': {description: Run daily report}
