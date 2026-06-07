@@ -20,7 +20,7 @@ public final class BenchmarkHarness {
             "script_eval_ms":0, "java_baseline_ms":0, "adapter_overhead_ms":0
             """.strip();
     private static final String[] PROFILES = new String[]{"baseline", "polyglot"};
-    private static final RequestSpec[] REQUESTS = new RequestSpec[]{new RequestSpec("POST", "/rules/evaluate", "{\"base_price_cents\":10000,\"quantity\":3}"), new RequestSpec("GET", "/rules/modes", "{}"), new RequestSpec("POST", "/scripts/validate", "{\"base_price_cents\":10000,\"quantity\":3}"), new RequestSpec("GET", "/health", "{}")};
+    private static final RequestSpec[] REQUESTS = new RequestSpec[]{new RequestSpec("POST", "/rules/evaluate", "{\"base_price_cents\":10000,\"quantity\":3}"), new RequestSpec("GET", "/rules/modes", "{}"), new RequestSpec("POST", "/scripts/validate", "{\"script\":\"return true\"}"), new RequestSpec("GET", "/health", "{}")};
 
     private BenchmarkHarness() { }
 
@@ -31,10 +31,9 @@ public final class BenchmarkHarness {
         String baseUrl = opts.getOrDefault("base-url", System.getenv().getOrDefault("BASE_URL", "http://localhost:8080"));
         long seed = Long.parseLong(opts.getOrDefault("seed", "424242"));
         Result r = run(baseUrl, profile, requests, seed);
+        if (r.ok() != r.requests()) { throw new IllegalStateException("only " + r.ok() + " of " + r.requests() + " benchmark requests succeeded against " + baseUrl); }
         Path out = Path.of(opts.getOrDefault("out", "results/results.json"));
-        if (out.getParent() != null) {
-            Files.createDirectories(out.getParent());
-        }
+        if (out.getParent() != null) Files.createDirectories(out.getParent());
         Files.writeString(out, r.toJson() + System.lineSeparator());
         System.out.println(r.toJson());
     }
@@ -47,19 +46,13 @@ public final class BenchmarkHarness {
         for (int i = 0; i < latenciesMs.length; i++) {
             RequestSpec spec = REQUESTS[Math.floorMod(i + random.nextInt(REQUESTS.length), REQUESTS.length)];
             HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + spec.path())).timeout(Duration.ofSeconds(5));
-            if ("POST".equals(spec.method())) {
-                builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(spec.body(), StandardCharsets.UTF_8));
-            } else {
-                builder.GET();
-            }
+            if ("POST".equals(spec.method())) builder.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(spec.body(), StandardCharsets.UTF_8)); else builder.GET();
             long start = System.nanoTime();
             try {
                 HttpResponse<String> res = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-                if (res.statusCode() >= 200 && res.statusCode() < 500) {
-                    ok++;
-                }
+                if (res.statusCode() >= 200 && res.statusCode() < 300 && !res.body().contains("\"error\"")) ok++;
             } catch (IOException e) {
-                // Preserve a schema-valid result even when the app is intentionally not running during harness smoke tests.
+                // Count connection or protocol failures as failed requests; the smoke runner starts the app explicitly.
             }
             latenciesMs[i] = Math.max(1L, (System.nanoTime() - start) / 1_000_000L);
         }
@@ -69,33 +62,12 @@ public final class BenchmarkHarness {
         return new Result(profile, latenciesMs.length, ok, throughput, pct(latenciesMs, 50.0D), pct(latenciesMs, 99.0D), pct(latenciesMs, 99.9D), pct(latenciesMs, 99.99D));
     }
 
-    private static long pct(long[] v, double p) {
-        return v[Math.min(v.length - 1, (int) Math.ceil((p / 100.0D) * v.length) - 1)];
-    }
-
-    private static Map<String, String> parse(String[] args) {
-        Map<String, String> out = new LinkedHashMap<>();
-        for (int i = 0; i < args.length; i++) {
-            String a = args[i];
-            if (a.startsWith("--")) {
-                String k = a.substring(2);
-                String v = "true";
-                if (i + 1 < args.length && !args[i + 1].startsWith("--")) {
-                    v = args[++i];
-                }
-                out.put(k, v);
-            }
-        }
-        return out;
-    }
-
+    private static long pct(long[] v, double p) { return v[Math.min(v.length - 1, (int) Math.ceil((p / 100.0D) * v.length) - 1)]; }
+    private static Map<String, String> parse(String[] args) { Map<String, String> out = new LinkedHashMap<>(); for (int i = 0; i < args.length; i++) { String a = args[i]; if (a.startsWith("--")) { String k = a.substring(2); String v = "true"; if (i + 1 < args.length && !args[i + 1].startsWith("--")) v = args[++i]; out.put(k, v); } } return out; }
     record RequestSpec(String method, String path, String body) { }
-
     record Result(String profile, int requests, int ok, double throughput, long p50, long p99, long p999, long p9999) {
-        String toJson() {
-            return """
+        String toJson() { return """
                     {"benchmark":"%s","runtime":"openjdk-hotspot-21","gc":"G1","jvm_flags":["-XX:+UseG1GC"],"env":{"cpu":"%d","kernel":"unknown","cgroup_cpu":"unknown","cgroup_mem":"unknown"},"load_profile":"%s","phases":{"warmup_s":0,"measure_s":0},"kpis":{"throughput":%.3f,"p50_ms":%d,"p99_ms":%d,"p999_ms":%d,"p9999_ms":%d,"gc_pause_p99_ms":0,"alloc_rate_mb_s":0,"rss_mb":0,"native_mem_mb":0,"cpu_util_pct":0},"mode_kpis":{%s}}
-                    """.formatted(BENCHMARK, Runtime.getRuntime().availableProcessors(), profile, throughput, p50, p99, p999, p9999, MODE_KPIS_JSON).trim();
-        }
+                    """.formatted(BENCHMARK, Runtime.getRuntime().availableProcessors(), profile, throughput, p50, p99, p999, p9999, MODE_KPIS_JSON).trim(); }
     }
 }
