@@ -134,7 +134,27 @@ public final class MiniHttpServer {
     private static String listJson(Iterable<String> values) { if (values == null) return "[]"; StringBuilder out = new StringBuilder("["); boolean first = true; for (String value : values) { if (!first) out.append(','); out.append('"').append(escape(value)).append('"'); first = false; } return out.append(']').toString(); }
     private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.6f", v); }
     private static String urlDecode(String raw) { return URLDecoder.decode(raw, StandardCharsets.UTF_8); }
-    private static String escape(String raw) { StringBuilder out = new StringBuilder(raw.length()); for (int i = 0; i < raw.length(); i++) { char c = raw.charAt(i); if (c == 34 || c == 92) out.append((char)92).append(c); else if (c == 10) out.append("\n"); else out.append(c); } return out.toString(); }
+    private static String escape(String raw) {
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.toString();
+    }
     private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
     private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException { byte[] data = body.getBytes(StandardCharsets.UTF_8); ex.getResponseHeaders().set("Content-Type", contentType); ex.sendResponseHeaders(status, data.length); try (OutputStream out = ex.getResponseBody()) { out.write(data); } }
     private void log(String event, String fields) { System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}"); }

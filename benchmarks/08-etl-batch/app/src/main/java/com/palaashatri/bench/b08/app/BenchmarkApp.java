@@ -80,7 +80,25 @@ public final class BenchmarkApp {
     }
 
     private static String escape(String raw) {
-        return raw.replace("\\", "\\\\").replace("\"", "\\\"");
+        StringBuilder out = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            switch (c) {
+                case '"' -> out.append("\\\"");
+                case '\\' -> out.append("\\\\");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+                }
+            }
+        }
+        return out.toString();
     }
 
     private static Map<String, String> parse(String[] args) {
