@@ -19,20 +19,40 @@ public final class BenchmarkApp {
             new MiniHttpServer(BENCHMARK, "Coldstart Function Suite").start(Integer.parseInt(opts.getOrDefault("port", "8080")));
             return;
         }
+
         long start = System.nanoTime();
-        long records = Long.parseLong(opts.getOrDefault("records", "1000"));
-        long checksum = 0L;
-        for (long i = 0; i < records; i++) {
-            checksum += (i * 31L) ^ BENCHMARK.hashCode();
-        }
-        long elapsedMs = Math.max(1L, (System.nanoTime() - start) / 1_000_000L);
+        String function = opts.getOrDefault("function", "json-transform");
+        long seed = Long.parseLong(opts.getOrDefault("seed", "424242"));
+        String payload = opts.getOrDefault("payload", "local-smoke");
+        String result = invoke(function, seed, payload, start);
         Path outDir = Path.of(opts.getOrDefault("out", "build/output"));
         Files.createDirectories(outDir);
-        String result = """
-                {"benchmark":"%s","records":%d,"checksum":%d,"elapsed_ms":%d}
-                """.formatted(BENCHMARK, records, checksum, elapsedMs).trim();
         Files.writeString(outDir.resolve("result.json"), result + System.lineSeparator());
         System.out.println(result);
+    }
+
+    private static String invoke(String function, long seed, String payload, long startNanos) {
+        long checksum = deterministic(function + ":" + payload, seed);
+        long elapsedMs = Math.max(1L, (System.nanoTime() - startNanos) / 1_000_000L);
+        return switch (function) {
+            case "json-transform" -> "{\"benchmark\":\"" + BENCHMARK + "\",\"function\":\"json-transform\",\"status\":\"OK\",\"uppercase\":\"" + escape(payload.toUpperCase(java.util.Locale.ROOT)) + "\",\"checksum\":" + checksum + ",\"elapsed_ms\":" + elapsedMs + "}";
+            case "thumbnail-stub" -> "{\"benchmark\":\"" + BENCHMARK + "\",\"function\":\"thumbnail-stub\",\"status\":\"OK\",\"width\":" + (64 + checksum % 512) + ",\"height\":" + (64 + (checksum / 7) % 512) + ",\"checksum\":" + checksum + ",\"elapsed_ms\":" + elapsedMs + "}";
+            case "crud-tiny" -> "{\"benchmark\":\"" + BENCHMARK + "\",\"function\":\"crud-tiny\",\"status\":\"OK\",\"created\":1,\"read\":1,\"updated\":1,\"deleted\":1,\"checksum\":" + checksum + ",\"elapsed_ms\":" + elapsedMs + "}";
+            case "lightweight-infer" -> "{\"benchmark\":\"" + BENCHMARK + "\",\"function\":\"lightweight-infer\",\"status\":\"OK\",\"class_id\":" + (checksum % 5) + ",\"confidence\":" + String.format(java.util.Locale.ROOT, "%.4f", 0.5D + (checksum % 5000) / 10000.0D) + ",\"checksum\":" + checksum + ",\"elapsed_ms\":" + elapsedMs + "}";
+            default -> throw new IllegalArgumentException("unknown function: " + function);
+        };
+    }
+
+    private static long deterministic(String value, long seed) {
+        long h = 1125899906842597L ^ seed;
+        for (int i = 0; i < value.length(); i++) {
+            h = 31L * h + value.charAt(i);
+        }
+        return Math.floorMod(h, 1_000_000_007L);
+    }
+
+    private static String escape(String raw) {
+        return raw.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     private static Map<String, String> parse(String[] args) {

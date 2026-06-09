@@ -18,7 +18,7 @@ compile_sources() {
   javac --release "$JAVA_RELEASE" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
+run_java() { compile_sources; exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
 
 wait_for_health() {
   url="$1"

@@ -1,4 +1,11 @@
 #!/usr/bin/env sh
 set -eu
-BASE_URL="${BASE_URL:-http://localhost:8080}"
-if [ -x ./gradlew ]; then ./gradlew run --args="--base-url $BASE_URL --requests 5 --out results/results.json"; else mvn -q exec:java -Dexec.args="--base-url $BASE_URL --requests 5 --out results/results.json"; fi
+cd "$(dirname "$0")/.."
+requests="${REQUESTS:-5}"
+if [ -n "${BASE_URL:-}" ]; then
+  ./run.sh run --base-url "$BASE_URL" --requests "$requests" --out results/results.json
+else
+  REQUESTS="$requests" ./run.sh test
+  mkdir -p results
+  cp build/run-sh/results.json results/results.json
+fi
