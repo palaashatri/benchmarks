@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-3-autoscaling-api-app
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test scaffold, not the full benchmark application described below. The scaffold exists so `run.sh build` / `run.sh test` and the harness/result pipeline can be exercised without external services. The full implementation described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 A Spring Boot product catalog API with a complex polymorphic pricing engine,
@@ -22,7 +25,7 @@ benchmark-3-autoscaling-api-app/
 │   ├── service.yml
 │   ├── hpa.yml
 │   └── configmap.yml
-├── src/main/java/com/opthub/bench/catalog/
+├── src/main/java/com/palaashatri/bench/catalog/
 │   ├── CatalogApplication.java
 │   ├── controller/
 │   │   ├── ProductController.java

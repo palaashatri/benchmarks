@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Fintech Ledger Service contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /transfers:
+    post:
+      responses:
+        '200': {description: Submit deterministic transfer}
+  /accounts/{id}/balance:
+    get:
+      responses:
+        '200': {description: Read account balance}
+  /accounts/{id}/transactions:
+    get:
+      responses:
+        '200': {description: Read recent transaction history}

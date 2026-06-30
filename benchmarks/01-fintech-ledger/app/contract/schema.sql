@@ -1,0 +1,2 @@
+CREATE TABLE accounts (id VARCHAR(64) PRIMARY KEY, balance_cents BIGINT NOT NULL, version BIGINT NOT NULL);
+CREATE TABLE ledger_entries (id VARCHAR(64) PRIMARY KEY, account_id VARCHAR(64) NOT NULL, amount_cents BIGINT NOT NULL, created_at TIMESTAMP NOT NULL);

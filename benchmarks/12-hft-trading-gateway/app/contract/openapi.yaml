@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: HFT Trading Gateway contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /grpc/SubmitOrder:
+    post:
+      responses:
+        '200': {description: Submit JSON order over local gRPC-shaped shim}
+  /grpc/CancelOrder:
+    post:
+      responses:
+        '200': {description: Cancel JSON order over local shim}
+  /grpc/GetOrderStatus/{orderId}:
+    get:
+      responses:
+        '200': {description: Read order status over local shim}

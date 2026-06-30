@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-5-large-monolith-harness
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test harness scaffold, not the full load-generation and observability harness described below. The scaffold exists so `run.sh build` / `run.sh test` can produce schema-shaped smoke results. The full harness described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 Test harness for the large monolith benchmark. Drives HTTP load against the
@@ -23,7 +26,7 @@ HTTP only.
 benchmark-5-large-monolith-harness/
 ├── pom.xml
 ├── docker-compose.yml              # Prometheus + Grafana + app stack
-├── src/main/scala/com/opthub/bench/harness/
+├── src/main/scala/com/palaashatri/bench/harness/
 │   ├── WarmupCurveSimulation.scala     # captures throughput ramp from cold
 │   ├── SteadyStateSimulation.scala
 │   └── RestartCycleSimulation.scala    # kill + restart + measure loop

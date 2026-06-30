@@ -1,0 +1,4 @@
+syntax = "proto3";
+service Inference { rpc Predict(InferenceRequest) returns (InferenceResponse); }
+message InferenceRequest { repeated float features = 1; }
+message InferenceResponse { int32 predicted_class = 1; float confidence = 2; }

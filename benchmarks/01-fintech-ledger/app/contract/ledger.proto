@@ -1,0 +1,4 @@
+syntax = "proto3";
+service Ledger { rpc Transfer(TransferRequest) returns (TransferResponse); }
+message TransferRequest { string from_account = 1; string to_account = 2; int64 amount_cents = 3; }
+message TransferResponse { string id = 1; bool accepted = 2; }

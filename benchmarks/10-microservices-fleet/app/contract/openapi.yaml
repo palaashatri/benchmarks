@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Microservices Fleet contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /api/v1/catalog/{productId}:
+    get:
+      responses:
+        '200': {description: Read catalog product}
+  /api/v1/orders:
+    post:
+      responses:
+        '200': {description: Create order}
+  /api/v1/orders/{orderId}:
+    get:
+      responses:
+        '200': {description: Read order status}

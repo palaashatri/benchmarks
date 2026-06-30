@@ -1,0 +1,35 @@
+#!/usr/bin/env sh
+set -eu
+cmd="${1:-build}"
+shift || true
+main_class="com.palaashatri.bench.b08.app.BenchmarkApp"
+classes="build/classes/java/main"
+compile() {
+  mkdir -p "$classes"
+  find src/main/java -name '*.java' | sort > build/sources.txt
+  if [ -s build/sources.txt ]; then javac --release 21 -d "$classes" @build/sources.txt; fi
+}
+case "$cmd" in
+  build|test|classes)
+    compile
+    ;;
+  run)
+    compile
+    args=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --args=*) args="${1#--args=}" ;;
+        --args) shift; args="${1:-}" ;;
+      esac
+      shift || true
+    done
+    # shellcheck disable=SC2086
+    exec java -cp "$classes" "$main_class" $args
+    ;;
+  clean)
+    rm -rf build
+    ;;
+  *)
+    compile
+    ;;
+esac

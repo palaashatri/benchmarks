@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-4-trading-gateway-app
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test scaffold, not the full benchmark application described below. The scaffold exists so `run.sh build` / `run.sh test` and the harness/result pipeline can be exercised without external services. The full implementation described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 A simulated high-frequency trading order gateway. Accepts orders via gRPC,
@@ -24,7 +27,7 @@ benchmark-4-trading-gateway-app/
 ├── Dockerfile
 ├── src/main/proto/
 │   └── trading.proto
-├── src/main/java/com/opthub/bench/trading/
+├── src/main/java/com/palaashatri/bench/trading/
 │   ├── TradingGatewayApplication.java
 │   ├── server/
 │   │   └── TradingGrpcServer.java

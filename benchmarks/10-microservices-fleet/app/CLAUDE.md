@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-2-microservices-fleet-app
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test scaffold, not the full benchmark application described below. The scaffold exists so `run.sh build` / `run.sh test` and the harness/result pipeline can be exercised without external services. The full implementation described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 A 5-service microservices fleet simulating an e-commerce backend.
@@ -29,7 +32,7 @@ benchmark-2-microservices-fleet-app/
 ├── gateway-service/
 │   ├── pom.xml
 │   ├── Dockerfile
-│   └── src/main/java/com/opthub/bench/gateway/
+│   └── src/main/java/com/palaashatri/bench/gateway/
 │       ├── GatewayApplication.java
 │       ├── controller/GatewayController.java
 │       ├── client/OrderServiceClient.java
@@ -39,7 +42,7 @@ benchmark-2-microservices-fleet-app/
 ├── order-service/
 │   ├── pom.xml
 │   ├── Dockerfile
-│   └── src/main/java/com/opthub/bench/order/
+│   └── src/main/java/com/palaashatri/bench/order/
 │       ├── OrderApplication.java
 │       ├── controller/OrderController.java
 │       ├── service/OrderService.java
@@ -53,7 +56,7 @@ benchmark-2-microservices-fleet-app/
 ├── inventory-service/
 │   ├── pom.xml
 │   ├── Dockerfile
-│   └── src/main/java/com/opthub/bench/inventory/
+│   └── src/main/java/com/palaashatri/bench/inventory/
 │       ├── InventoryApplication.java
 │       ├── controller/InventoryController.java
 │       ├── service/InventoryService.java
@@ -63,7 +66,7 @@ benchmark-2-microservices-fleet-app/
 ├── pricing-service/
 │   ├── pom.xml
 │   ├── Dockerfile
-│   └── src/main/java/com/opthub/bench/pricing/
+│   └── src/main/java/com/palaashatri/bench/pricing/
 │       ├── PricingApplication.java
 │       ├── controller/PricingController.java
 │       ├── service/PricingService.java
@@ -81,7 +84,7 @@ benchmark-2-microservices-fleet-app/
 └── audit-service/
     ├── pom.xml
     ├── Dockerfile
-    └── src/main/java/com/opthub/bench/audit/
+    └── src/main/java/com/palaashatri/bench/audit/
         ├── AuditApplication.java
         ├── listener/OrderEventListener.java
         ├── service/AuditService.java

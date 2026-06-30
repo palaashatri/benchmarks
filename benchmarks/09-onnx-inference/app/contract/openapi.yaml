@@ -1,0 +1,29 @@
+openapi: 3.0.3
+info:
+  title: ONNX Inference Service contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /api/v1/inference/health:
+    get:
+      responses:
+        '200': {description: Read inference health}
+  /api/v1/inference/classify:
+    post:
+      responses:
+        '200': {description: Classify text with local model}

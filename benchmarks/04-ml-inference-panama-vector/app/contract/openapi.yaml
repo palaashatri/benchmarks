@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: ML Inference Feature Pipeline contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /infer:
+    post:
+      responses:
+        '200': {description: Run local vector inference}
+  /features:
+    post:
+      responses:
+        '200': {description: Compute feature vector}
+  /model:
+    get:
+      responses:
+        '200': {description: Read model metadata}

@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-3-autoscaling-api-harness
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test harness scaffold, not the full load-generation and observability harness described below. The scaffold exists so `run.sh build` / `run.sh test` can produce schema-shaped smoke results. The full harness described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 Load harness that simulates flash-sale burst traffic patterns against the

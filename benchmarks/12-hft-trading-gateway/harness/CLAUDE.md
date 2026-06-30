@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-4-trading-gateway-harness
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test harness scaffold, not the full load-generation and observability harness described below. The scaffold exists so `run.sh build` / `run.sh test` can produce schema-shaped smoke results. The full harness described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 Custom Java load generator for the trading gateway. Uses gRPC client stubs
@@ -18,7 +21,7 @@ HTTP overhead that swamps the signal.
 ```
 benchmark-4-trading-gateway-harness/
 ├── pom.xml
-├── src/main/java/com/opthub/bench/harness/trading/
+├── src/main/java/com/palaashatri/bench/harness/trading/
 │   ├── TradingLoadGenerator.java
 │   ├── OrderGenerator.java
 │   ├── LatencyCollector.java

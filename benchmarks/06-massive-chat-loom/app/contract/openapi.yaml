@@ -1,0 +1,33 @@
+openapi: 3.0.3
+info:
+  title: Massive Chat Loom Server contract
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      responses:
+        '200': {description: healthy}
+  /metrics:
+    get:
+      responses:
+        '200': {description: prometheus metrics}
+  /actuator/health:
+    get:
+      responses:
+        '200': {description: actuator health}
+  /actuator/prometheus:
+    get:
+      responses:
+        '200': {description: actuator prometheus metrics}
+  /connections/simulate:
+    post:
+      responses:
+        '200': {description: Simulate virtual connections}
+  /rooms/{id}/messages:
+    post:
+      responses:
+        '200': {description: Publish room message}
+  /rooms/{id}/events:
+    get:
+      responses:
+        '200': {description: Read room events}

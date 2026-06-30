@@ -1,5 +1,8 @@
 # CLAUDE.md — benchmark-1-onnx-inference-harness
 
+
+> **Current implementation status:** this directory currently contains a local smoke-test harness scaffold, not the full load-generation and observability harness described below. The scaffold exists so `run.sh build` / `run.sh test` can produce schema-shaped smoke results. The full harness described in this file remains the target and should replace the scaffold incrementally. See `../../../IMPLEMENTATION_STATUS.md`.
+
 ## Overview
 
 Test harness for Benchmark 09. Drives load against the ONNX inference
@@ -19,7 +22,7 @@ Completely separate from the application — connects only via HTTP.
 benchmark-1-onnx-inference-harness/
 ├── pom.xml
 ├── docker-compose.yml          # Prometheus + Grafana + app
-├── src/main/scala/com/opthub/bench/harness/
+├── src/main/scala/com/palaashatri/bench/harness/
 │   ├── ColdStartSimulation.scala
 │   ├── SteadyStateSimulation.scala
 │   ├── BurstLoadSimulation.scala

@@ -1,0 +1,1 @@
+{"type":"record","name":"AnalyticsEvent","fields":[{"name":"id","type":"string"},{"name":"eventTime","type":"long"},{"name":"key","type":"string"},{"name":"value","type":"double"}]}
