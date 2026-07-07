@@ -76,7 +76,7 @@ smoke_harness() {
     base_url="${BASE_URL:-http://127.0.0.1:$port}"
   fi
   requests="${REQUESTS:-4}"
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --out build/run-sh/results.json > build/run-sh/harness-smoke.log
+  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --threads 8 --runs 3 --out build/run-sh/results.json > build/run-sh/harness-smoke.log
   test -s build/run-sh/results.json
   cat build/run-sh/results.json
   if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; trap - EXIT INT TERM; fi

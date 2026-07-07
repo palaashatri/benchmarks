@@ -6,6 +6,14 @@ plugins {
 group = "com.palaashatri.bench"
 version = "0.1.0"
 
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation("org.mozilla:rhino:1.7.15")
+}
+
 java {
     sourceCompatibility = JavaVersion.VERSION_21
     targetCompatibility = JavaVersion.VERSION_21

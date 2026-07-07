@@ -6,19 +6,36 @@ MAIN_CLASS="com.palaashatri.bench.b05.app.BenchmarkApp"
 JAVA_RELEASE="21"
 ROLE="app"
 DEFAULT_PORT="18005"
-SMOKE_GETS='/rules/modes'
-SMOKE_POSTS='/rules/evaluate::{"base_price_cents":10000,"quantity":3}|/scripts/validate::{"script":"return true"}'
+SMOKE_GETS='/health|/api/v1/scripts'
+SMOKE_POSTS='/api/v1/score::{"script":"function f(data){return data.value*2;}f(data);","data":{"value":21.0}}|/api/v1/score/rule/1::{"amount":750}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
+RHINO_JAR="build/run-sh/rhino-1.7.15.jar"
+
+download_rhino() {
+  if [ ! -f "$RHINO_JAR" ]; then
+    mkdir -p "$(dirname "$RHINO_JAR")"
+    echo "Downloading Rhino 1.7.15..." >&2
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL -o "$RHINO_JAR" "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar"
+    elif command -v wget >/dev/null 2>&1; then
+      wget -q -O "$RHINO_JAR" "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar"
+    else
+      echo "Neither curl nor wget found; cannot download Rhino jar" >&2; exit 1
+    fi
+    echo "Rhino downloaded." >&2
+  fi
+}
 
 compile_sources() {
   mkdir -p "$CLASSES_DIR"
+  download_rhino
   find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
   if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
-  javac --release "$JAVA_RELEASE" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  javac --release "$JAVA_RELEASE" -cp "$RHINO_JAR" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
+run_java() { compile_sources; exec java -cp "$CLASSES_DIR:$RHINO_JAR" "$MAIN_CLASS" "$@"; }
 
 wait_for_health() {
   url="$1"
@@ -40,7 +57,7 @@ smoke_app() {
   compile_sources
   port="${PORT:-$DEFAULT_PORT}"
   mkdir -p build/run-sh
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
+  java -cp "$CLASSES_DIR:$RHINO_JAR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
   pid="$!"
   trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
   wait_for_health "http://127.0.0.1:$port/health"
