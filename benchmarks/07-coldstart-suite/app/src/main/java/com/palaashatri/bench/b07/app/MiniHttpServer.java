@@ -3,133 +3,268 @@ package com.palaashatri.bench.b07.app;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
-import java.net.URLDecoder;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class MiniHttpServer {
-    private final String benchmark;
-    private final String title;
-    private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final Map<String, Long> balances = new ConcurrentHashMap<>();
-    private final Map<String, ArrayDeque<String>> histories = new ConcurrentHashMap<>();
-    private final Map<String, Long> counters = new ConcurrentHashMap<>();
-    private final Map<String, List<String>> lists = new ConcurrentHashMap<>();
-    private final Map<String, String> documents = new ConcurrentHashMap<>();
 
-    public MiniHttpServer(String benchmark, String title) {
+    // When the JVM started (epoch ms)
+    private final long jvmStartMs = ManagementFactory.getRuntimeMXBean().getStartTime();
+
+    // When this server was initialized (nanoTime)
+    private final long startedAtNano = System.nanoTime();
+
+    // NanoTime of the very first request (-1 until first request arrives)
+    private final AtomicLong firstRequestNano = new AtomicLong(-1L);
+
+    // Total request counter
+    private final AtomicLong requests = new AtomicLong();
+
+    // Per-second throughput circular buffer (60 slots)
+    private final AtomicLong[] perSecondCounts = new AtomicLong[60];
+    private final long[] secondTimestamps = new long[60];
+
+    private final String benchmark;
+
+    // Fixed child port for coldstart measurement
+    private static final int CHILD_PORT = 18070;
+
+    public MiniHttpServer(String benchmark) {
         this.benchmark = benchmark;
-        this.title = title;
-        seedState();
+        for (int i = 0; i < 60; i++) {
+            perSecondCounts[i] = new AtomicLong(0);
+            secondTimestamps[i] = 0L;
+        }
     }
 
     public void start(int port) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
-        server.createContext("/health", this::health);
-        server.createContext("/metrics", this::metrics);
-        server.createContext("/actuator/health", this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/", this::route);
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/health", this::handleHealth);
+        server.createContext("/actuator/health", this::handleHealth);
+        server.createContext("/metrics", this::handleMetrics);
+        server.createContext("/actuator/prometheus", this::handleMetrics);
+        server.createContext("/api/v1/coldstart/measure", this::handleColdstartMeasure);
+        server.createContext("/api/v1/jfr/stats", this::handleJfrStats);
+        server.createContext("/api/v1/warmup", this::handleWarmup);
+        server.createContext("/", this::handleCatchAll);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
         log("started", "\"port\":" + port);
     }
 
-    private void seedState() {
-        for (int i = 1; i <= 2000; i++) { balances.put("" + i, 1_000_000L + i * 17L); }
-        balances.put("1001", 1_500_000L);
-        balances.put("1002", 1_250_000L);
-        documents.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
+    // -------------------------------------------------------------------------
+    // Request recording
+    // -------------------------------------------------------------------------
+
+    private void recordFirstRequest() {
+        firstRequestNano.compareAndSet(-1L, System.nanoTime());
     }
 
-    private void health(HttpExchange ex) throws IOException { json(ex, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark + "\",\"service\":\"" + escape(title) + "\"}"); }
+    private void recordRequest() {
+        requests.incrementAndGet();
+        long currentSecond = System.currentTimeMillis() / 1000L;
+        int idx = (int) (currentSecond % 60);
+        // If the slot belongs to a different second, reset it
+        if (secondTimestamps[idx] != currentSecond) {
+            synchronized (perSecondCounts[idx]) {
+                if (secondTimestamps[idx] != currentSecond) {
+                    perSecondCounts[idx].set(0L);
+                    secondTimestamps[idx] = currentSecond;
+                }
+            }
+        }
+        perSecondCounts[idx].incrementAndGet();
+    }
 
-    private void metrics(HttpExchange ex) throws IOException {
-        String body = "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n"
-                + "# TYPE benchmark_domain_events_total counter\n"
-                + "benchmark_domain_events_total{benchmark=\"" + benchmark + "\"} " + counters.values().stream().mapToLong(Long::longValue).sum() + "\n"
+    // -------------------------------------------------------------------------
+    // Handlers
+    // -------------------------------------------------------------------------
+
+    private void handleHealth(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        long uptimeMs = (System.nanoTime() - startedAtNano) / 1_000_000L;
+        long firstNano = firstRequestNano.get();
+        long startupMs = firstNano == -1L ? -1L : (firstNano - startedAtNano) / 1_000_000L;
+        long compiledMs = compilationMs();
+        long jvmUptimeMs = System.currentTimeMillis() - jvmStartMs;
+        String body = "{\"status\":\"UP\",\"uptime_ms\":" + uptimeMs
+                + ",\"startup_ms\":" + startupMs
+                + ",\"compiled_ms\":" + compiledMs
+                + ",\"jvm_start_ms\":" + jvmUptimeMs + "}";
+        json(ex, 200, body);
+    }
+
+    private void handleMetrics(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        long startupMs = startupMsValue();
+        long compiledMs = compilationMs();
+        long loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
+        int processors = Runtime.getRuntime().availableProcessors();
+        long totalRequests = requests.get();
+        String body = "# TYPE jvm_startup_ms gauge\n"
+                + "jvm_startup_ms " + startupMs + "\n"
+                + "# TYPE jvm_compilation_ms_total counter\n"
+                + "jvm_compilation_ms_total " + compiledMs + "\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + totalRequests + "\n"
+                + "# TYPE jvm_loaded_classes gauge\n"
+                + "jvm_loaded_classes " + loadedClasses + "\n"
                 + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n";
+                + "jvm_available_processors " + processors + "\n";
         bytes(ex, 200, "text/plain; version=0.0.4", body);
     }
 
-    private void route(HttpExchange ex) throws IOException {
-        long n = requests.incrementAndGet();
-        String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-        String query = ex.getRequestURI().getRawQuery() == null ? "" : ex.getRequestURI().getRawQuery();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        try { json(ex, 200, handle(method, path, query, body, n)); }
-        catch (IllegalArgumentException e) { json(ex, 404, "{\"error\":\"" + escape(e.getMessage()) + "\",\"benchmark\":\"" + benchmark + "\"}"); }
+    private void handleJfrStats(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        long compiledMs = compilationMs();
+        long loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
+        long uptimeMs = (System.nanoTime() - startedAtNano) / 1_000_000L;
+        long jvmUptimeMs = System.currentTimeMillis() - jvmStartMs;
+        String body = "{\"total_compilation_ms\":" + compiledMs
+                + ",\"loaded_classes\":" + loadedClasses
+                + ",\"uptime_ms\":" + uptimeMs
+                + ",\"jvm_start_ms\":" + jvmUptimeMs + "}";
+        json(ex, 200, body);
     }
 
-    private String handle(String method, String path, String query, String body, long requestId) {
-        if (path.equals("/functions")) return "{\"functions\":[\"json-transform\",\"thumbnail-stub\",\"crud-tiny\",\"lightweight-infer\"]}";
-        if (method.equals("POST") && path.startsWith("/invoke/")) {
-            String fn = path.substring("/invoke/".length());
-            long checksum = deterministicWork(fn + body, requestId);
-            return "{\"function\":\"" + escape(fn) + "\",\"status\":\"OK\",\"checksum\":" + checksum + ",\"cold_start_safe\":true}";
+    private void handleColdstartMeasure(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        // Drain the request body (good practice)
+        try (InputStream in = ex.getRequestBody()) { in.readAllBytes(); }
+
+        Process childProcess = null;
+        long ttfr = -1L;
+        String errorMsg = null;
+        try {
+            long t0 = System.nanoTime();
+            String cp = System.getProperty("java.class.path");
+            childProcess = new ProcessBuilder(
+                    "java", "-cp", cp,
+                    "com.palaashatri.bench.b07.app.BenchmarkApp",
+                    String.valueOf(CHILD_PORT))
+                    .redirectErrorStream(true)
+                    .start();
+
+            // Poll child /health until 200, max 10s (100 attempts x 100ms)
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofMillis(500))
+                    .build();
+            boolean responded = false;
+            for (int attempt = 0; attempt < 100; attempt++) {
+                try {
+                    Thread.sleep(100);
+                    HttpRequest req = HttpRequest.newBuilder(
+                            URI.create("http://localhost:" + CHILD_PORT + "/health"))
+                            .timeout(Duration.ofMillis(400))
+                            .GET().build();
+                    HttpResponse<Void> res = client.send(req, HttpResponse.BodyHandlers.discarding());
+                    if (res.statusCode() == 200) {
+                        ttfr = (System.nanoTime() - t0) / 1_000_000L;
+                        responded = true;
+                        break;
+                    }
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception ignored) {
+                    // child not ready yet
+                }
+            }
+            if (!responded) {
+                errorMsg = "timeout";
+            }
+        } catch (Exception e) {
+            errorMsg = escape(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        } finally {
+            if (childProcess != null) {
+                childProcess.destroyForcibly();
+            }
         }
-        throw notFound(path);
+
+        String body;
+        if (errorMsg != null) {
+            body = "{\"time_to_first_response_ms\":-1,\"error\":\"" + errorMsg + "\"}";
+        } else {
+            body = "{\"time_to_first_response_ms\":" + ttfr + "}";
+        }
+        json(ex, 200, body);
     }
 
-    private String windowJson(String key) {
-        long count = counters.getOrDefault("stream_count:" + key, 0L);
-        long sum = counters.getOrDefault("stream:" + key, 0L);
-        return "{\"key\":\"" + escape(key) + "\",\"window\":\"rolling-60s\",\"count\":" + count + ",\"sum\":" + sum + "}";
+    private void handleWarmup(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        long nowSecond = System.currentTimeMillis() / 1000L;
+        StringBuilder sb = new StringBuilder("{\"samples\":[");
+        boolean first = true;
+        for (int offset = 59; offset >= 0; offset--) {
+            long second = nowSecond - offset;
+            int idx = (int) (second % 60);
+            if (secondTimestamps[idx] == second) {
+                long rps = perSecondCounts[idx].get();
+                if (rps > 0) {
+                    if (!first) sb.append(',');
+                    sb.append("{\"second\":").append(second).append(",\"rps\":").append(rps).append('}');
+                    first = false;
+                }
+            }
+        }
+        sb.append("]}");
+        json(ex, 200, sb.toString());
     }
 
-    private void append(String key, String value) { lists.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value); histories.computeIfAbsent(key, ignored -> new ArrayDeque<>()).add(value); }
-    private IllegalArgumentException notFound(String path) { return new IllegalArgumentException("no route for " + path); }
-
-    private static double[] features(String body, long requestId) {
-        double[] out = new double[8];
-        for (int i = 0; i < out.length; i++) { out[i] = ((body.hashCode() + requestId * (i + 3)) & 0xff) / 255.0D; }
-        return out;
+    private void handleCatchAll(HttpExchange ex) throws IOException {
+        recordFirstRequest();
+        recordRequest();
+        // Drain body
+        try (InputStream in = ex.getRequestBody()) { in.readAllBytes(); }
+        String path = ex.getRequestURI().getPath();
+        json(ex, 404, "{\"error\":\"no route for " + escape(path) + "\",\"benchmark\":\"" + benchmark + "\"}");
     }
 
-    private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1); if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1); if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private long startupMsValue() {
+        long firstNano = firstRequestNano.get();
+        return firstNano == -1L ? -1L : (firstNano - startedAtNano) / 1_000_000L;
     }
 
-    private static long number(String body, String name, long fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int start = colon + 1; while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
-        int end = start; while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
+    private long compilationMs() {
+        var compMX = ManagementFactory.getCompilationMXBean();
+        if (compMX == null) return 0L;
+        return compMX.getTotalCompilationTime();
     }
 
-    private static Map<String, String> query(String raw) {
-        Map<String, String> out = new LinkedHashMap<>(); if (raw == null || raw.isBlank()) return out;
-        for (String part : raw.split("&")) { int eq = part.indexOf('='); if (eq > 0) out.put(urlDecode(part.substring(0, eq)), urlDecode(part.substring(eq + 1))); }
-        return out;
+    private static void json(HttpExchange ex, int status, String body) throws IOException {
+        bytes(ex, status, "application/json", body);
     }
 
-    private static long deterministicWork(String value, long salt) { long h = 1125899906842597L ^ salt; for (int i = 0; i < value.length(); i++) h = 31L * h + value.charAt(i); return Math.floorMod(h, 1_000_000_007L); }
-    private static String listJson(Iterable<String> values) { if (values == null) return "[]"; StringBuilder out = new StringBuilder("["); boolean first = true; for (String value : values) { if (!first) out.append(','); out.append('"').append(escape(value)).append('"'); first = false; } return out.append(']').toString(); }
-    private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.6f", v); }
-    private static String urlDecode(String raw) { return URLDecoder.decode(raw, StandardCharsets.UTF_8); }
+    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
+        byte[] data = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.sendResponseHeaders(status, data.length);
+        try (OutputStream out = ex.getResponseBody()) {
+            out.write(data);
+        }
+    }
+
     private static String escape(String raw) {
+        if (raw == null) return "";
         StringBuilder out = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
@@ -150,7 +285,8 @@ public final class MiniHttpServer {
         }
         return out.toString();
     }
-    private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException { byte[] data = body.getBytes(StandardCharsets.UTF_8); ex.getResponseHeaders().set("Content-Type", contentType); ex.sendResponseHeaders(status, data.length); try (OutputStream out = ex.getResponseBody()) { out.write(data); } }
-    private void log(String event, String fields) { System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}"); }
+
+    private void log(String event, String fields) {
+        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+    }
 }
