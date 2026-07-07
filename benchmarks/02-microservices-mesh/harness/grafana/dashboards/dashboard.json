@@ -1,4 +1,80 @@
 {
-  "title": "Event-Driven Microservices Mesh JVM Benchmark",
-  "panels": []
+  "uid": "02-mesh",
+  "title": "02 Microservices Mesh",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request Throughput (req/s)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(benchmark_requests_total{benchmark=\"02-microservices-mesh\"}[1m])",
+          "legendFormat": "proxy req/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Inter-Service Call Rate (calls/s)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "rate(inter_service_calls_total{service=\"account\"}[1m])",
+          "legendFormat": "account"
+        },
+        {
+          "expr": "rate(inter_service_calls_total{service=\"transaction\"}[1m])",
+          "legendFormat": "transaction"
+        },
+        {
+          "expr": "rate(inter_service_calls_total{service=\"notification\"}[1m])",
+          "legendFormat": "notification"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Inter-Service p99 Latency (ms)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "inter_service_p99_ms",
+          "legendFormat": "p99 ms"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ms" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Circuit Breaker Open Events",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "circuit_breaker_open_count",
+          "legendFormat": "open events"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      }
+    }
+  ],
+  "templating": { "list": [] },
+  "annotations": { "list": [] }
 }
