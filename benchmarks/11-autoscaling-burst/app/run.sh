@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b11.app.BenchmarkApp"
 JAVA_RELEASE="17"
 ROLE="app"
 DEFAULT_PORT="18011"
-SMOKE_GETS='/api/v1/products/1001?region=US&customerId=cust-1'
-SMOKE_POSTS=''
+SMOKE_GETS='/api/v1/catalog/health|/api/v1/metrics/scaling'
+SMOKE_POSTS='/api/v1/catalog/search::{"query":"shoes","category":"footwear"}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 

@@ -1,4 +1,60 @@
 {
   "title": "Autoscaling Burst API JVM Benchmark",
-  "panels": []
+  "uid": "b11-autoscaling",
+  "schemaVersion": 38,
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Catalog Request Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "rate(catalog_requests_total[1m])",
+          "legendFormat": "requests/sec"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Reject Rate (429s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "rate(catalog_rejected_total[1m])",
+          "legendFormat": "rejected/sec"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Thread Pool Size",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "catalog_pool_size",
+          "legendFormat": "pool size"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Work Queue Depth",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "catalog_queue_depth",
+          "legendFormat": "queue depth"
+        }
+      ]
+    }
+  ]
 }
