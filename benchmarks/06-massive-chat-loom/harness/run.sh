@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b06.harness.BenchmarkHarness"
 JAVA_RELEASE="21"
 ROLE="harness"
 DEFAULT_PORT="18006"
-SMOKE_GETS='/rooms/general/events'
-SMOKE_POSTS='/rooms/general/messages::{"message":"hello"}|/connections/simulate::{"connections":128}'
+SMOKE_GETS='/rooms|/rooms/room-1/messages|/api/v1/stats'
+SMOKE_POSTS='/rooms/room-1/messages::{"sender":"user1","content":"hello world"}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 
@@ -76,7 +76,8 @@ smoke_harness() {
     base_url="${BASE_URL:-http://127.0.0.1:$port}"
   fi
   requests="${REQUESTS:-4}"
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --out build/run-sh/results.json > build/run-sh/harness-smoke.log
+  threads="${THREADS:-16}"
+  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --threads "$threads" --out build/run-sh/results.json > build/run-sh/harness-smoke.log
   test -s build/run-sh/results.json
   cat build/run-sh/results.json
   if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; trap - EXIT INT TERM; fi

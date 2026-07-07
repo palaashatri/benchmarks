@@ -1,4 +1,75 @@
 {
-  "title": "Massive Chat Loom Server JVM Benchmark",
-  "panels": []
+  "id": null,
+  "uid": "b06-chat-loom",
+  "title": "Massive Chat Loom — 06",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-15m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request Rate",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(benchmark_requests_total[1m])",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"}
+      }
+    },
+    {
+      "id": 2,
+      "title": "Active Rooms",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "chat_rooms_active",
+          "legendFormat": "rooms",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"}
+      }
+    },
+    {
+      "id": 3,
+      "title": "Broadcast Rate",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(chat_broadcasts_total[1m])",
+          "legendFormat": "broadcasts/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"}
+      }
+    },
+    {
+      "id": 4,
+      "title": "JVM Thread Count",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "jvm_thread_count",
+          "legendFormat": "threads",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short"}
+      }
+    }
+  ]
 }

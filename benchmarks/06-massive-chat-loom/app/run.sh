@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b06.app.BenchmarkApp"
 JAVA_RELEASE="21"
 ROLE="app"
 DEFAULT_PORT="18006"
-SMOKE_GETS='/rooms/general/events'
-SMOKE_POSTS='/rooms/general/messages::{"message":"hello"}|/connections/simulate::{"connections":128}'
+SMOKE_GETS='/rooms|/rooms/room-1/messages|/api/v1/stats'
+SMOKE_POSTS='/rooms/room-1/messages::{"sender":"user1","content":"hello world"}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 

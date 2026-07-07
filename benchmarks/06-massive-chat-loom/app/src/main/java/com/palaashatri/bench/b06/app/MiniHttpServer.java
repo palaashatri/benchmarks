@@ -5,15 +5,13 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -21,93 +19,142 @@ public final class MiniHttpServer {
     private final String benchmark;
     private final String title;
     private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final Map<String, Long> balances = new ConcurrentHashMap<>();
-    private final Map<String, ArrayDeque<String>> histories = new ConcurrentHashMap<>();
-    private final Map<String, Long> counters = new ConcurrentHashMap<>();
-    private final Map<String, List<String>> lists = new ConcurrentHashMap<>();
-    private final Map<String, String> documents = new ConcurrentHashMap<>();
+    private final AtomicLong broadcastCount = new AtomicLong();
+    private final AtomicLong messageIdSeq = new AtomicLong(1);
+    private final ConcurrentHashMap<String, Set<String>> rooms = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, ConcurrentLinkedDeque<String>> messages = new ConcurrentHashMap<>();
 
     public MiniHttpServer(String benchmark, String title) {
         this.benchmark = benchmark;
         this.title = title;
-        seedState();
     }
 
     public void start(int port) throws IOException {
+        // Warmup: spawn virtual thread to seed rooms and messages
+        Thread.ofVirtual().start(() -> {
+            for (int i = 1; i <= 50; i++) {
+                String roomId = "room-" + i;
+                rooms.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet());
+                ConcurrentLinkedDeque<String> deque = messages.computeIfAbsent(roomId, k -> new ConcurrentLinkedDeque<>());
+                for (int j = 1; j <= 10; j++) {
+                    deque.addLast("{\"sender\":\"seed\",\"content\":\"seed message " + j + "\",\"message_id\":" + messageIdSeq.getAndIncrement() + "}");
+                }
+            }
+        });
+
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+
+        // Register specific paths before generic prefix paths to avoid conflicts
+        server.createContext("/rooms/room-", this::routeRoomSpecific);
+        server.createContext("/api/v1/stats", this::stats);
         server.createContext("/health", this::health);
-        server.createContext("/metrics", this::metrics);
+        server.createContext("/metrics", this::metricsHandler);
         server.createContext("/actuator/health", this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/", this::route);
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/actuator/prometheus", this::metricsHandler);
+        server.createContext("/rooms", this::roomsList);
+
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        log("started", "\"port\":" + port);
+        log("started", "\"port\":" + port + ",\"executor\":\"virtual-threads\"");
     }
 
-    private void seedState() {
-        for (int i = 1; i <= 2000; i++) { balances.put("" + i, 1_000_000L + i * 17L); }
-        balances.put("1001", 1_500_000L);
-        balances.put("1002", 1_250_000L);
-        documents.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
-    }
-
-    private void health(HttpExchange ex) throws IOException { json(ex, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark + "\",\"service\":\"" + escape(title) + "\"}"); }
-
-    private void metrics(HttpExchange ex) throws IOException {
-        String body = "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n"
-                + "# TYPE benchmark_domain_events_total counter\n"
-                + "benchmark_domain_events_total{benchmark=\"" + benchmark + "\"} " + counters.values().stream().mapToLong(Long::longValue).sum() + "\n"
-                + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
-    }
-
-    private void route(HttpExchange ex) throws IOException {
-        long n = requests.incrementAndGet();
+    private void routeRoomSpecific(HttpExchange ex) throws IOException {
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
-        String query = ex.getRequestURI().getRawQuery() == null ? "" : ex.getRequestURI().getRawQuery();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        try { json(ex, 200, handle(method, path, query, body, n)); }
-        catch (IllegalArgumentException e) { json(ex, 404, "{\"error\":\"" + escape(e.getMessage()) + "\",\"benchmark\":\"" + benchmark + "\"}"); }
+
+        if ("POST".equals(method) && path.matches("/rooms/[^/]+/messages")) {
+            requests.incrementAndGet();
+            String roomId = path.split("/")[2];
+            String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            String sender = field(body, "sender", "anonymous");
+            String content = field(body, "content", "");
+            long msgId = messageIdSeq.getAndIncrement();
+
+            rooms.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet()).add(sender);
+            ConcurrentLinkedDeque<String> deque = messages.computeIfAbsent(roomId, k -> new ConcurrentLinkedDeque<>());
+            deque.addLast("{\"sender\":\"" + escape(sender) + "\",\"content\":\"" + escape(content) + "\",\"message_id\":" + msgId + "}");
+            // Trim to last 100
+            while (deque.size() > 100) {
+                deque.pollFirst();
+            }
+            long bc = broadcastCount.incrementAndGet();
+            int delivered = deque.size();
+
+            json(ex, 200, "{\"room_id\":\"" + escape(roomId) + "\",\"delivered\":" + delivered + ",\"message_id\":" + msgId + "}");
+        } else if ("GET".equals(method) && path.matches("/rooms/[^/]+/messages")) {
+            requests.incrementAndGet();
+            String roomId = path.split("/")[2];
+            ConcurrentLinkedDeque<String> deque = messages.computeIfAbsent(roomId, k -> new ConcurrentLinkedDeque<>());
+            // Last 20
+            List<String> last20 = new ArrayList<>();
+            Object[] arr = deque.toArray();
+            int start = Math.max(0, arr.length - 20);
+            for (int i = start; i < arr.length; i++) {
+                last20.add((String) arr[i]);
+            }
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < last20.size(); i++) {
+                if (i > 0) sb.append(",");
+                sb.append(last20.get(i));
+            }
+            sb.append("]");
+            json(ex, 200, sb.toString());
+        } else if ("GET".equals(method) && path.matches("/rooms/[^/]+/subscribers")) {
+            requests.incrementAndGet();
+            String roomId = path.split("/")[2];
+            Set<String> subs = rooms.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet());
+            json(ex, 200, "{\"room_id\":\"" + escape(roomId) + "\",\"subscribers\":" + subs.size() + "}");
+        } else {
+            json(ex, 404, "{\"error\":\"no route for " + escape(path) + "\",\"benchmark\":\"" + benchmark + "\"}");
+        }
     }
 
-    private String handle(String method, String path, String query, String body, long requestId) {
-        if (method.equals("POST") && path.matches("/rooms/[^/]+/messages")) {
-            String room = path.split("/")[2];
-            String msg = field(body, "message", "msg-" + requestId);
-            append("room:" + room, requestId + ":" + msg);
-            counters.merge("messages", 1L, Long::sum);
-            return "{\"room\":\"" + escape(room) + "\",\"sequence\":" + requestId + ",\"delivered\":" + lists.get("room:" + room).size() + "}";
+    private void roomsList(HttpExchange ex) throws IOException {
+        requests.incrementAndGet();
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (String roomId : rooms.keySet()) {
+            if (!first) sb.append(",");
+            int msgCount = messages.getOrDefault(roomId, new ConcurrentLinkedDeque<>()).size();
+            int subCount = rooms.getOrDefault(roomId, Collections.emptySet()).size();
+            sb.append("{\"id\":\"").append(escape(roomId)).append("\",\"messages\":").append(msgCount)
+                    .append(",\"subscribers\":").append(subCount).append("}");
+            first = false;
         }
-        if (path.matches("/rooms/[^/]+/events")) {
-            String room = path.split("/")[2];
-            return "{\"room\":\"" + escape(room) + "\",\"events\":" + listJson(lists.get("room:" + room)) + "}";
-        }
-        if (method.equals("POST") && path.equals("/connections/simulate")) {
-            long conns = number(body, "connections", 100 + requestId);
-            counters.put("connections", conns);
-            return "{\"connections\":" + conns + ",\"virtual_threads\":" + conns + ",\"accepted\":true}";
-        }
-        throw notFound(path);
+        sb.append("]");
+        json(ex, 200, sb.toString());
     }
 
-    private String windowJson(String key) {
-        long count = counters.getOrDefault("stream_count:" + key, 0L);
-        long sum = counters.getOrDefault("stream:" + key, 0L);
-        return "{\"key\":\"" + escape(key) + "\",\"window\":\"rolling-60s\",\"count\":" + count + ",\"sum\":" + sum + "}";
+    private void stats(HttpExchange ex) throws IOException {
+        long totalMessages = messages.values().stream().mapToLong(ConcurrentLinkedDeque::size).sum();
+        long jvmThreadCount = Thread.activeCount();
+        json(ex, 200, "{\"virtual_threads_submitted\":" + requests.get()
+                + ",\"active_rooms\":" + rooms.size()
+                + ",\"total_broadcasts\":" + broadcastCount.get()
+                + ",\"total_messages\":" + totalMessages
+                + ",\"jvm_thread_count\":" + jvmThreadCount + "}");
     }
 
-    private void append(String key, String value) { lists.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value); histories.computeIfAbsent(key, ignored -> new ArrayDeque<>()).add(value); }
-    private IllegalArgumentException notFound(String path) { return new IllegalArgumentException("no route for " + path); }
+    private void health(HttpExchange ex) throws IOException {
+        json(ex, 200, "{\"status\":\"UP\",\"rooms\":" + rooms.size() + ",\"executor\":\"virtual-threads\"}");
+    }
 
-    private static double[] features(String body, long requestId) {
-        double[] out = new double[8];
-        for (int i = 0; i < out.length; i++) { out[i] = ((body.hashCode() + requestId * (i + 3)) & 0xff) / 255.0D; }
-        return out;
+    private void metricsHandler(HttpExchange ex) throws IOException {
+        long totalMessages = messages.values().stream().mapToLong(ConcurrentLinkedDeque::size).sum();
+        long jvmThreadCount = Thread.activeCount();
+        String body = "# TYPE chat_requests_total counter\n"
+                + "chat_requests_total " + requests.get() + "\n"
+                + "# TYPE chat_broadcasts_total counter\n"
+                + "chat_broadcasts_total " + broadcastCount.get() + "\n"
+                + "# TYPE chat_rooms_active gauge\n"
+                + "chat_rooms_active " + rooms.size() + "\n"
+                + "# TYPE chat_messages_total gauge\n"
+                + "chat_messages_total " + totalMessages + "\n"
+                + "# TYPE jvm_thread_count gauge\n"
+                + "jvm_thread_count " + jvmThreadCount + "\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n";
+        bytes(ex, 200, "text/plain; version=0.0.4", body);
     }
 
     private static String field(String body, String name, String fallback) {
@@ -119,26 +166,6 @@ public final class MiniHttpServer {
         return body.substring(firstQuote + 1, secondQuote);
     }
 
-    private static long number(String body, String name, long fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int start = colon + 1; while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
-        int end = start; while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static Map<String, String> query(String raw) {
-        Map<String, String> out = new LinkedHashMap<>(); if (raw == null || raw.isBlank()) return out;
-        for (String part : raw.split("&")) { int eq = part.indexOf('='); if (eq > 0) out.put(urlDecode(part.substring(0, eq)), urlDecode(part.substring(eq + 1))); }
-        return out;
-    }
-
-    private static long deterministicWork(String value, long salt) { long h = 1125899906842597L ^ salt; for (int i = 0; i < value.length(); i++) h = 31L * h + value.charAt(i); return Math.floorMod(h, 1_000_000_007L); }
-    private static String listJson(Iterable<String> values) { if (values == null) return "[]"; StringBuilder out = new StringBuilder("["); boolean first = true; for (String value : values) { if (!first) out.append(','); out.append('"').append(escape(value)).append('"'); first = false; } return out.append(']').toString(); }
-    private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.6f", v); }
-    private static String urlDecode(String raw) { return URLDecoder.decode(raw, StandardCharsets.UTF_8); }
     private static String escape(String raw) {
         StringBuilder out = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
@@ -160,7 +187,21 @@ public final class MiniHttpServer {
         }
         return out.toString();
     }
-    private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException { byte[] data = body.getBytes(StandardCharsets.UTF_8); ex.getResponseHeaders().set("Content-Type", contentType); ex.sendResponseHeaders(status, data.length); try (OutputStream out = ex.getResponseBody()) { out.write(data); } }
-    private void log(String event, String fields) { System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}"); }
+
+    private static void json(HttpExchange ex, int status, String body) throws IOException {
+        bytes(ex, status, "application/json", body);
+    }
+
+    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
+        byte[] data = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.sendResponseHeaders(status, data.length);
+        try (OutputStream out = ex.getResponseBody()) {
+            out.write(data);
+        }
+    }
+
+    private void log(String event, String fields) {
+        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+    }
 }
