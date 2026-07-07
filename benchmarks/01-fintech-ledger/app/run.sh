@@ -11,14 +11,58 @@ SMOKE_POSTS='/transfers::{"from":"1001","to":"1002","amount_cents":125}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 
+DEPS_DIR="build/run-sh/deps"
+
+download_deps() {
+  mkdir -p "$DEPS_DIR"
+  _mvn_base="https://repo1.maven.org/maven2"
+  _jars="
+com/h2database/h2/2.2.224/h2-2.2.224.jar
+com/zaxxer/HikariCP/5.1.0/HikariCP-5.1.0.jar
+org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar
+org/slf4j/slf4j-simple/2.0.9/slf4j-simple-2.0.9.jar
+io/micrometer/micrometer-core/1.13.6/micrometer-core-1.13.6.jar
+io/micrometer/micrometer-registry-prometheus/1.13.6/micrometer-registry-prometheus-1.13.6.jar
+io/prometheus/simpleclient/0.16.0/simpleclient-0.16.0.jar
+io/prometheus/simpleclient_common/0.16.0/simpleclient_common-0.16.0.jar
+io/prometheus/simpleclient_tracer_otel/0.16.0/simpleclient_tracer_otel-0.16.0.jar
+io/prometheus/simpleclient_tracer_otel_agent/0.16.0/simpleclient_tracer_otel_agent-0.16.0.jar
+"
+  for _path in $_jars; do
+    _path="$(echo "$_path" | tr -d ' ')"
+    [ -z "$_path" ] && continue
+    _jar="$(basename "$_path")"
+    _dest="$DEPS_DIR/$_jar"
+    if [ ! -f "$_dest" ]; then
+      echo "Downloading $_jar ..."
+      curl -fsSL "$_mvn_base/$_path" -o "$_dest"
+    fi
+  done
+}
+
+build_deps_cp() {
+  _cp=""
+  for _f in "$DEPS_DIR"/*.jar; do
+    [ -f "$_f" ] || continue
+    if [ -z "$_cp" ]; then _cp="$_f"; else _cp="$_cp:$_f"; fi
+  done
+  echo "$_cp"
+}
+
 compile_sources() {
+  download_deps
   mkdir -p "$CLASSES_DIR"
   find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
   if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
-  javac --release "$JAVA_RELEASE" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  DEPS_CP="$(build_deps_cp)"
+  javac --release "$JAVA_RELEASE" -cp "$DEPS_CP" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
+run_java() {
+  compile_sources
+  DEPS_CP="$(build_deps_cp)"
+  exec java -cp "$CLASSES_DIR:$DEPS_CP" "$MAIN_CLASS" "$@"
+}
 
 wait_for_health() {
   url="$1"
@@ -38,9 +82,10 @@ PYWAIT
 
 smoke_app() {
   compile_sources
+  DEPS_CP="$(build_deps_cp)"
   port="${PORT:-$DEFAULT_PORT}"
   mkdir -p build/run-sh
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
+  java -cp "$CLASSES_DIR:$DEPS_CP" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
   pid="$!"
   trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
   wait_for_health "http://127.0.0.1:$port/health"
