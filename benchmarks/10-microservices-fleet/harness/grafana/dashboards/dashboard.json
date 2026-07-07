@@ -1,4 +1,56 @@
 {
-  "title": "Microservices Fleet JVM Benchmark",
-  "panels": []
+  "title": "10 Microservices Fleet Benchmark",
+  "uid": "b10-microservices-fleet",
+  "schemaVersion": 38,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Fleet Request Rate",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(fleet_requests_total[1m])",
+          "legendFormat": "req/s"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Services Up",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "fleet_services_up",
+          "legendFormat": "services"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Deploy Count",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+      "targets": [
+        {
+          "expr": "fleet_deploy_count",
+          "legendFormat": "deploys"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Request Rate During Deploys",
+      "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(fleet_requests_total[1m])",
+          "legendFormat": "req/s (deploy window)"
+        }
+      ]
+    }
+  ]
 }
