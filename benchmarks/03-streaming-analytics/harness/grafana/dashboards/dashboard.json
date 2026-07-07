@@ -1,4 +1,60 @@
 {
   "title": "Streaming Analytics Pipeline JVM Benchmark",
-  "panels": []
+  "uid": "b03-streaming",
+  "schemaVersion": 38,
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Event Throughput (published/sec)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "rate(streaming_events_published_total[1m])",
+          "legendFormat": "events/sec"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Consumer Lag",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "streaming_consumer_lag",
+          "legendFormat": "consumer lag"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active Windows",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "streaming_windows_active",
+          "legendFormat": "active windows"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Request Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "prometheus"},
+          "expr": "rate(benchmark_requests_total[1m])",
+          "legendFormat": "req/sec"
+        }
+      ]
+    }
+  ]
 }

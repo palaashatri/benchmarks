@@ -7,105 +7,154 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class MiniHttpServer {
+    record StreamEvent(String key, double value, long timestamp) {}
+    record WindowState(String key, long windowStart, long count, double sum, double min, double max) {
+        double avg() { return count == 0 ? 0 : sum / count; }
+    }
+
     private final String benchmark;
-    private final String title;
-    private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final Map<String, Long> balances = new ConcurrentHashMap<>();
-    private final Map<String, ArrayDeque<String>> histories = new ConcurrentHashMap<>();
-    private final Map<String, Long> counters = new ConcurrentHashMap<>();
-    private final Map<String, List<String>> lists = new ConcurrentHashMap<>();
-    private final Map<String, String> documents = new ConcurrentHashMap<>();
+    private final LinkedBlockingQueue<StreamEvent> queue = new LinkedBlockingQueue<>(100_000);
+    private final ConcurrentHashMap<String, WindowState> windows = new ConcurrentHashMap<>();
+    private final AtomicLong eventsPublished = new AtomicLong();
+    private final AtomicLong eventsConsumed = new AtomicLong();
+    private final AtomicLong requestCount = new AtomicLong();
 
     public MiniHttpServer(String benchmark, String title) {
         this.benchmark = benchmark;
-        this.title = title;
-        seedState();
+        startConsumers();
+    }
+
+    private void startConsumers() {
+        var executor = Executors.newVirtualThreadPerTaskExecutor();
+        for (int i = 0; i < 2; i++) {
+            executor.submit(this::consumerLoop);
+        }
+    }
+
+    private void consumerLoop() {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                StreamEvent e = queue.poll(100, TimeUnit.MILLISECONDS);
+                if (e == null) continue;
+                long windowStart = (e.timestamp() / 10_000) * 10_000;
+                String windowKey = e.key() + ":" + windowStart;
+                windows.compute(windowKey, (k, w) -> {
+                    if (w == null) return new WindowState(e.key(), windowStart, 1, e.value(), e.value(), e.value());
+                    return new WindowState(e.key(), windowStart, w.count() + 1, w.sum() + e.value(),
+                            Math.min(w.min(), e.value()), Math.max(w.max(), e.value()));
+                });
+                eventsConsumed.incrementAndGet();
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     public void start(int port) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
         server.createContext("/health", this::health);
         server.createContext("/metrics", this::metrics);
-        server.createContext("/actuator/health", this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/", this::route);
-        server.setExecutor(Executors.newCachedThreadPool());
+        server.createContext("/api/v1/events", this::handleEvents);
+        server.createContext("/api/v1/windows", this::handleWindows);
+        server.createContext("/api/v1/lag", this::handleLag);
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        log("started", "\"port\":" + port);
+        System.out.println("{\"event\":\"started\",\"benchmark\":\"" + benchmark + "\",\"port\":" + port + "}");
     }
 
-    private void seedState() {
-        for (int i = 1; i <= 2000; i++) { balances.put("" + i, 1_000_000L + i * 17L); }
-        balances.put("1001", 1_500_000L);
-        balances.put("1002", 1_250_000L);
-        documents.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
+    private void health(HttpExchange ex) throws IOException {
+        requestCount.incrementAndGet();
+        json(ex, 200, "{\"status\":\"UP\",\"queue_depth\":" + queue.size() + ",\"windows\":" + windows.size() + "}");
     }
-
-    private void health(HttpExchange ex) throws IOException { json(ex, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark + "\",\"service\":\"" + escape(title) + "\"}"); }
 
     private void metrics(HttpExchange ex) throws IOException {
-        String body = "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n"
-                + "# TYPE benchmark_domain_events_total counter\n"
-                + "benchmark_domain_events_total{benchmark=\"" + benchmark + "\"} " + counters.values().stream().mapToLong(Long::longValue).sum() + "\n"
-                + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n";
+        requestCount.incrementAndGet();
+        long pub = eventsPublished.get();
+        long con = eventsConsumed.get();
+        String body = "streaming_events_published_total " + pub + "\n"
+                + "streaming_events_consumed_total " + con + "\n"
+                + "streaming_consumer_lag " + (pub - con) + "\n"
+                + "streaming_windows_active " + windows.size() + "\n"
+                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requestCount.get() + "\n";
         bytes(ex, 200, "text/plain; version=0.0.4", body);
     }
 
-    private void route(HttpExchange ex) throws IOException {
-        long n = requests.incrementAndGet();
+    private void handleEvents(HttpExchange ex) throws IOException {
+        requestCount.incrementAndGet();
         String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-        String query = ex.getRequestURI().getRawQuery() == null ? "" : ex.getRequestURI().getRawQuery();
+        if (!"POST".equals(method)) { json(ex, 405, "{\"error\":\"method not allowed\"}"); return; }
         String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        try { json(ex, 200, handle(method, path, query, body, n)); }
-        catch (IllegalArgumentException e) { json(ex, 404, "{\"error\":\"" + escape(e.getMessage()) + "\",\"benchmark\":\"" + benchmark + "\"}"); }
+        String key = field(body, "key", "sensor-default");
+        double value = numberDouble(body, "value", 0.0);
+        long ts = System.currentTimeMillis();
+        StreamEvent event = new StreamEvent(key, value, ts);
+        boolean accepted = queue.offer(event);
+        if (accepted) eventsPublished.incrementAndGet();
+        json(ex, 200, "{\"accepted\":" + accepted + ",\"queue_depth\":" + queue.size() + "}");
     }
 
-    private String handle(String method, String path, String query, String body, long requestId) {
-        if (method.equals("POST") && path.equals("/events")) {
-            String key = field(body, "key", "device-" + (1 + requestId % 4));
-            long value = number(body, "value", requestId % 100);
-            counters.merge("stream:" + key, value, Long::sum);
-            counters.merge("stream_count:" + key, 1L, Long::sum);
-            counters.put("lag", Math.max(0L, 100L - requestId));
-            return windowJson(key);
+    private void handleWindows(HttpExchange ex) throws IOException {
+        requestCount.incrementAndGet();
+        String path = ex.getRequestURI().getPath();
+        // /api/v1/windows/{key} or /api/v1/windows
+        String prefix = "/api/v1/windows";
+        if (path.length() > prefix.length() + 1) {
+            String key = urlDecode(path.substring(prefix.length() + 1));
+            // Find latest window for this key
+            WindowState latest = null;
+            for (var entry : windows.entrySet()) {
+                if (entry.getValue().key().equals(key)) {
+                    if (latest == null || entry.getValue().windowStart() > latest.windowStart()) {
+                        latest = entry.getValue();
+                    }
+                }
+            }
+            if (latest == null) {
+                json(ex, 200, "{\"key\":\"" + escape(key) + "\",\"count\":0,\"sum\":0,\"avg\":0,\"min\":0,\"max\":0,\"window_start\":0}");
+            } else {
+                WindowState w = latest;
+                json(ex, 200, "{\"key\":\"" + escape(w.key()) + "\",\"count\":" + w.count()
+                        + ",\"sum\":" + fmt(w.sum()) + ",\"avg\":" + fmt(w.avg())
+                        + ",\"min\":" + fmt(w.min()) + ",\"max\":" + fmt(w.max())
+                        + ",\"window_start\":" + w.windowStart() + "}");
+            }
+        } else {
+            // Return all windows (up to 100)
+            List<WindowState> all = new ArrayList<>(windows.values());
+            int limit = Math.min(100, all.size());
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < limit; i++) {
+                if (i > 0) sb.append(',');
+                WindowState w = all.get(i);
+                sb.append("{\"key\":\"").append(escape(w.key())).append("\",\"count\":").append(w.count())
+                        .append(",\"sum\":").append(fmt(w.sum())).append(",\"avg\":").append(fmt(w.avg()))
+                        .append(",\"min\":").append(fmt(w.min())).append(",\"max\":").append(fmt(w.max()))
+                        .append(",\"window_start\":").append(w.windowStart()).append('}');
+            }
+            sb.append(']');
+            json(ex, 200, sb.toString());
         }
-        if (path.startsWith("/windows/")) {
-            return windowJson(urlDecode(path.substring("/windows/".length())));
-        }
-        if (path.equals("/lag")) {
-            return "{\"watermark_lag_ms\":" + counters.getOrDefault("lag", 0L) + ",\"backpressure\":false}";
-        }
-        throw notFound(path);
     }
 
-    private String windowJson(String key) {
-        long count = counters.getOrDefault("stream_count:" + key, 0L);
-        long sum = counters.getOrDefault("stream:" + key, 0L);
-        return "{\"key\":\"" + escape(key) + "\",\"window\":\"rolling-60s\",\"count\":" + count + ",\"sum\":" + sum + "}";
-    }
-
-    private void append(String key, String value) { lists.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value); histories.computeIfAbsent(key, ignored -> new ArrayDeque<>()).add(value); }
-    private IllegalArgumentException notFound(String path) { return new IllegalArgumentException("no route for " + path); }
-
-    private static double[] features(String body, long requestId) {
-        double[] out = new double[8];
-        for (int i = 0; i < out.length; i++) { out[i] = ((body.hashCode() + requestId * (i + 3)) & 0xff) / 255.0D; }
-        return out;
+    private void handleLag(HttpExchange ex) throws IOException {
+        requestCount.incrementAndGet();
+        long pub = eventsPublished.get();
+        long con = eventsConsumed.get();
+        json(ex, 200, "{\"queue_depth\":" + queue.size()
+                + ",\"events_published\":" + pub
+                + ",\"events_consumed\":" + con
+                + ",\"consumer_lag\":" + (pub - con) + "}");
     }
 
     private static String field(String body, String name, String fallback) {
@@ -117,24 +166,16 @@ public final class MiniHttpServer {
         return body.substring(firstQuote + 1, secondQuote);
     }
 
-    private static long number(String body, String name, long fallback) {
+    private static double numberDouble(String body, String name, double fallback) {
         String quoted = "\"" + name + "\"";
         int key = body.indexOf(quoted); if (key < 0) return fallback;
         int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
         int start = colon + 1; while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
-        int end = start; while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
+        int end = start; while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-' || body.charAt(end) == '.')) end++;
         if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
+        try { return Double.parseDouble(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
     }
 
-    private static Map<String, String> query(String raw) {
-        Map<String, String> out = new LinkedHashMap<>(); if (raw == null || raw.isBlank()) return out;
-        for (String part : raw.split("&")) { int eq = part.indexOf('='); if (eq > 0) out.put(urlDecode(part.substring(0, eq)), urlDecode(part.substring(eq + 1))); }
-        return out;
-    }
-
-    private static long deterministicWork(String value, long salt) { long h = 1125899906842597L ^ salt; for (int i = 0; i < value.length(); i++) h = 31L * h + value.charAt(i); return Math.floorMod(h, 1_000_000_007L); }
-    private static String listJson(Iterable<String> values) { if (values == null) return "[]"; StringBuilder out = new StringBuilder("["); boolean first = true; for (String value : values) { if (!first) out.append(','); out.append('"').append(escape(value)).append('"'); first = false; } return out.append(']').toString(); }
     private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.6f", v); }
     private static String urlDecode(String raw) { return URLDecoder.decode(raw, StandardCharsets.UTF_8); }
     private static String escape(String raw) {
@@ -147,18 +188,16 @@ public final class MiniHttpServer {
                 case '\n' -> out.append("\\n");
                 case '\r' -> out.append("\\r");
                 case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
+                default -> { if (c < 0x20) out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c)); else out.append(c); }
             }
         }
         return out.toString();
     }
     private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException { byte[] data = body.getBytes(StandardCharsets.UTF_8); ex.getResponseHeaders().set("Content-Type", contentType); ex.sendResponseHeaders(status, data.length); try (OutputStream out = ex.getResponseBody()) { out.write(data); } }
-    private void log(String event, String fields) { System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}"); }
+    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
+        byte[] data = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.sendResponseHeaders(status, data.length);
+        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+    }
 }

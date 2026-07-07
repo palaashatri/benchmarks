@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b03.harness.BenchmarkHarness"
 JAVA_RELEASE="21"
 ROLE="harness"
 DEFAULT_PORT="18003"
-SMOKE_GETS='/windows/device-1|/lag'
-SMOKE_POSTS='/events::{"key":"device-1","value":42}'
+SMOKE_GETS='/api/v1/windows/sensor-1|/api/v1/lag'
+SMOKE_POSTS='/api/v1/events::{"key":"sensor-1","value":42.5}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 
