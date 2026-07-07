@@ -1,4 +1,61 @@
 {
-  "title": "ONNX Inference Service JVM Benchmark",
-  "panels": []
+  "title": "09 ONNX Inference Benchmark",
+  "uid": "b09-onnx-inference",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "10s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Inference Throughput (req/s)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(inference_requests_total[1m])",
+          "legendFormat": "inference req/s"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Inference Latency Trend (avg ms)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(inference_ms_total[1m]) / rate(inference_requests_total[1m])",
+          "legendFormat": "avg inference_ms"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Model Load Time (ms)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4},
+      "targets": [
+        {
+          "expr": "model_load_ms",
+          "legendFormat": "model_load_ms"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Total Request Rate (req/s)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 6, "y": 8, "w": 18, "h": 4},
+      "targets": [
+        {
+          "expr": "rate(benchmark_requests_total[1m])",
+          "legendFormat": "{{benchmark}} req/s"
+        }
+      ]
+    }
+  ]
 }
