@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b08.app.BenchmarkApp"
 JAVA_RELEASE="21"
 ROLE="app"
 DEFAULT_PORT="18008"
-SMOKE_GETS='/job/schema|/job/status'
-SMOKE_POSTS='/job/run::{"records":1000}'
+SMOKE_GETS='/health|/api/v1/etl/jobs'
+SMOKE_POSTS='/api/v1/etl/run::{}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 

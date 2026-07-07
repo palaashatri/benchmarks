@@ -1,4 +1,39 @@
 {
-  "title": "ETL Batch Job JVM Benchmark",
-  "panels": []
+  "uid": "etl-batch-08",
+  "title": "ETL Batch JVM Benchmark",
+  "schemaVersion": 36,
+  "panels": [
+    {
+      "id": 1,
+      "title": "ETL Records/sec",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rate(etl_records_processed_total[1m])", "datasource": {"type": "prometheus", "uid": "prometheus"}}]
+    },
+    {
+      "id": 2,
+      "title": "Batch Duration",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rate(etl_batch_duration_seconds_sum[1m]) / rate(etl_batch_duration_seconds_count[1m])", "datasource": {"type": "prometheus", "uid": "prometheus"}}]
+    },
+    {
+      "id": 3,
+      "title": "IO Throughput (bytes/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "rate(etl_io_bytes_written_total[1m])", "datasource": {"type": "prometheus", "uid": "prometheus"}}]
+    },
+    {
+      "id": 4,
+      "title": "JVM Heap Used (bytes)",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "jvm_memory_used_bytes", "datasource": {"type": "prometheus", "uid": "prometheus"}}]
+    }
+  ]
 }
