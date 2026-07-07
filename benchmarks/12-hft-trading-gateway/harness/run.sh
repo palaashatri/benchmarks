@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b12.harness.BenchmarkHarness"
 JAVA_RELEASE="21"
 ROLE="harness"
 DEFAULT_PORT="18012"
-SMOKE_GETS='/grpc/GetOrderStatus/order-1'
-SMOKE_POSTS='/grpc/SubmitOrder::{"symbol":"FOO","quantity":100,"price_nanos":125000000}|/grpc/CancelOrder::{"order_id":"order-1"}'
+SMOKE_GETS='/health|/orders/ord-1'
+SMOKE_POSTS='/orders::{"symbol":"AAPL","side":"BUY","quantity":100,"price_nanos":1500000}|/orders::{"symbol":"AAPL","side":"SELL","quantity":100,"price_nanos":1490000}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 

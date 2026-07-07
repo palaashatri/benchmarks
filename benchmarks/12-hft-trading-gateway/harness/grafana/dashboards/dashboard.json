@@ -1,4 +1,97 @@
 {
   "title": "HFT Trading Gateway JVM Benchmark",
-  "panels": []
+  "uid": "hft-trading-gateway",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-5m", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Order Submission Rate (orders/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(gateway_orders_total[1m])",
+          "legendFormat": "orders/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "ops"}
+      }
+    },
+    {
+      "id": 2,
+      "title": "Avg Wire Latency per Order (ns)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(gateway_wire_latency_ns_total[1m]) / rate(gateway_orders_total[1m])",
+          "legendFormat": "avg wire latency ns"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "ns"}
+      }
+    },
+    {
+      "id": 3,
+      "title": "Matched Pairs Rate (fills/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(gateway_matched_pairs_total[1m])",
+          "legendFormat": "matched pairs/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "ops"}
+      }
+    },
+    {
+      "id": 4,
+      "title": "Harness Request Rate (req/s)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "rate(benchmark_requests_total[1m])",
+          "legendFormat": "requests/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "ops"}
+      }
+    },
+    {
+      "id": 5,
+      "title": "Reject Rate",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "rate(gateway_reject_count_total[1m]) / rate(gateway_orders_total[1m])",
+          "legendFormat": "reject rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit"}
+      }
+    },
+    {
+      "id": 6,
+      "title": "JVM Processors",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+      "targets": [
+        {
+          "expr": "jvm_available_processors",
+          "legendFormat": "processors"
+        }
+      ]
+    }
+  ]
 }
