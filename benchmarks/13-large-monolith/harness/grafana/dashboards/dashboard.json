@@ -1,4 +1,63 @@
 {
-  "title": "Large Monolith JVM Benchmark",
-  "panels": []
+  "id": null,
+  "uid": "b13-monolith",
+  "title": "Large Monolith Warmup — 13",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "graph",
+      "title": "Request Throughput (req/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(monolith_requests_total[1m])",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "graph",
+      "title": "JIT Compilation Time (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "monolith_jit_compilation_ms",
+          "legendFormat": "JIT ms",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Beans Loaded",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "monolith_beans_loaded",
+          "legendFormat": "beans",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "graph",
+      "title": "Class Loading Count",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 8 },
+      "targets": [
+        {
+          "expr": "monolith_loaded_classes",
+          "legendFormat": "loaded classes",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
 }

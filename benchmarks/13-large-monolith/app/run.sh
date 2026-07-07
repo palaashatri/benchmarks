@@ -6,8 +6,8 @@ MAIN_CLASS="com.palaashatri.bench.b13.app.BenchmarkApp"
 JAVA_RELEASE="17"
 ROLE="app"
 DEFAULT_PORT="18013"
-SMOKE_GETS='/api/customers/1001|/api/reports/daily'
-SMOKE_POSTS='/api/orders::{"customerId":"1001","items":2}'
+SMOKE_GETS='/api/v1/monolith/health|/api/v1/monolith/warmup/status'
+SMOKE_POSTS=''
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 

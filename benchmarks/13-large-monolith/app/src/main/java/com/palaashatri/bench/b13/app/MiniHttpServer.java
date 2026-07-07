@@ -4,158 +4,195 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.management.*;
 import java.net.InetSocketAddress;
-import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
 public final class MiniHttpServer {
+
+    static final class SimpleBean {
+        private final int id;
+        private final String name;
+        SimpleBean(int id, String name) { this.id = id; this.name = name; }
+        int getId() { return id; }
+        String getName() { return name; }
+    }
+
     private final String benchmark;
     private final String title;
-    private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final Map<String, Long> balances = new ConcurrentHashMap<>();
-    private final Map<String, ArrayDeque<String>> histories = new ConcurrentHashMap<>();
-    private final Map<String, Long> counters = new ConcurrentHashMap<>();
-    private final Map<String, List<String>> lists = new ConcurrentHashMap<>();
-    private final Map<String, String> documents = new ConcurrentHashMap<>();
+    final long startMs = System.currentTimeMillis();
+    final List<SimpleBean> beans = new ArrayList<>();
+    final AtomicLong requests = new AtomicLong();
+    final long[] throughputSamples = new long[120];
+    final AtomicInteger sampleIdx = new AtomicInteger(0);
+    volatile long compiledMethodsAtPeak = 0;
+    volatile long timeToNinetyPct = 0;
+    volatile long peakTps = 0;
+    volatile long startupMsRecorded = -1;
+
+    // nameHash map used to simulate JIT pressure during bean generation
+    private final Map<Integer, Long> beanNameHashes = new HashMap<>();
 
     public MiniHttpServer(String benchmark, String title) {
         this.benchmark = benchmark;
         this.title = title;
-        seedState();
+        generateBeans();
+        startSampler();
+    }
+
+    private void generateBeans() {
+        for (int i = 1; i <= 500; i++) {
+            String name = "SimpleBean-" + i;
+            SimpleBean b = new SimpleBean(i, name);
+            beans.add(b);
+            // simulate JIT compilation pressure: compute hash and store
+            long h = 1125899906842597L ^ i;
+            for (int j = 0; j < name.length(); j++) {
+                h = 31L * h + name.charAt(j);
+            }
+            beanNameHashes.put(i, Math.floorMod(h, 1_000_000_007L));
+        }
+    }
+
+    private void startSampler() {
+        long[] prev = {0L};
+        Thread t = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
+                try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                long cur = requests.get();
+                long tps = cur - prev[0];
+                prev[0] = cur;
+                int idx = sampleIdx.getAndIncrement();
+                throughputSamples[idx % 120] = tps;
+                if (tps > peakTps) {
+                    peakTps = tps;
+                    compiledMethodsAtPeak = ManagementFactory.getCompilationMXBean().getTotalCompilationTime();
+                }
+                if (timeToNinetyPct == 0 && peakTps > 0 && tps >= peakTps * 9 / 10) {
+                    timeToNinetyPct = System.currentTimeMillis() - startMs;
+                }
+            }
+        });
+        t.setDaemon(true);
+        t.setName("throughput-sampler");
+        t.start();
     }
 
     public void start(int port) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
-        server.createContext("/health", this::health);
-        server.createContext("/metrics", this::metrics);
-        server.createContext("/actuator/health", this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/", this::route);
+        server.createContext("/health", this::handleHealth);
+        server.createContext("/metrics", this::handleMetrics);
+        server.createContext("/api/", this::handleApi);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        log("started", "\"port\":" + port);
+        log("started", "\"port\":" + port + ",\"beans_loaded\":" + beans.size());
     }
 
-    private void seedState() {
-        for (int i = 1; i <= 2000; i++) { balances.put("" + i, 1_000_000L + i * 17L); }
-        balances.put("1001", 1_500_000L);
-        balances.put("1002", 1_250_000L);
-        documents.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
+    private void recordFirstRequest() {
+        if (startupMsRecorded < 0) {
+            synchronized (this) {
+                if (startupMsRecorded < 0) {
+                    startupMsRecorded = System.currentTimeMillis() - startMs;
+                }
+            }
+        }
     }
 
-    private void health(HttpExchange ex) throws IOException { json(ex, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark + "\",\"service\":\"" + escape(title) + "\"}"); }
+    private void handleHealth(HttpExchange ex) throws IOException {
+        long sm = startupMsRecorded >= 0 ? startupMsRecorded : (System.currentTimeMillis() - startMs);
+        json(ex, 200, "{\"status\":\"UP\",\"beans_loaded\":500,\"startup_ms\":" + sm + "}");
+    }
 
-    private void metrics(HttpExchange ex) throws IOException {
-        String body = "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n"
-                + "# TYPE benchmark_domain_events_total counter\n"
-                + "benchmark_domain_events_total{benchmark=\"" + benchmark + "\"} " + counters.values().stream().mapToLong(Long::longValue).sum() + "\n"
-                + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n";
+    private void handleMetrics(HttpExchange ex) throws IOException {
+        long jitMs = ManagementFactory.getCompilationMXBean().getTotalCompilationTime();
+        int loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
+        long sm = startupMsRecorded >= 0 ? startupMsRecorded : (System.currentTimeMillis() - startMs);
+        String body = "# TYPE monolith_beans_loaded gauge\n"
+                + "monolith_beans_loaded 500\n"
+                + "# TYPE monolith_startup_ms gauge\n"
+                + "monolith_startup_ms " + sm + "\n"
+                + "# TYPE monolith_jit_compilation_ms gauge\n"
+                + "monolith_jit_compilation_ms " + jitMs + "\n"
+                + "# TYPE monolith_loaded_classes gauge\n"
+                + "monolith_loaded_classes " + loadedClasses + "\n"
+                + "# TYPE monolith_requests_total counter\n"
+                + "monolith_requests_total " + requests.get() + "\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n";
         bytes(ex, 200, "text/plain; version=0.0.4", body);
     }
 
-    private void route(HttpExchange ex) throws IOException {
-        long n = requests.incrementAndGet();
-        String method = ex.getRequestMethod();
+    private void handleApi(HttpExchange ex) throws IOException {
+        requests.incrementAndGet();
+        recordFirstRequest();
         String path = ex.getRequestURI().getPath();
-        String query = ex.getRequestURI().getRawQuery() == null ? "" : ex.getRequestURI().getRawQuery();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        try { json(ex, 200, handle(method, path, query, body, n)); }
-        catch (IllegalArgumentException e) { json(ex, 404, "{\"error\":\"" + escape(e.getMessage()) + "\",\"benchmark\":\"" + benchmark + "\"}"); }
-    }
-
-    private String handle(String method, String path, String query, String body, long requestId) {
-        if (path.startsWith("/api/customers/")) {
-            String id = path.substring("/api/customers/".length());
-            return "{\"customerId\":\"" + escape(id) + "\",\"segments\":[\"retail\",\"loyalty\"],\"rulesEvaluated\":12}";
+        if (path.equals("/api/v1/monolith/health")) {
+            handleMonolithHealth(ex);
+        } else if (path.equals("/api/v1/monolith/warmup/status")) {
+            handleWarmupStatus(ex);
+        } else {
+            json(ex, 404, "{\"error\":\"no route for " + escape(path) + "\",\"benchmark\":\"" + benchmark + "\"}");
         }
-        if (method.equals("POST") && path.equals("/api/orders")) {
-            String id = "mono-order-" + ids.getAndIncrement();
-            documents.put(id, "{\"orderId\":\"" + id + "\",\"state\":\"VALIDATED\",\"scheduledJobsTouched\":6}");
-            return documents.get(id);
-        }
-        if (path.equals("/api/reports/daily")) return "{\"reportDate\":\"" + Instant.now().toString().substring(0, 10) + "\",\"beansVisited\":512,\"rulesEvaluated\":12,\"orders\":" + documents.size() + "}";
-        throw notFound(path);
     }
 
-    private String windowJson(String key) {
-        long count = counters.getOrDefault("stream_count:" + key, 0L);
-        long sum = counters.getOrDefault("stream:" + key, 0L);
-        return "{\"key\":\"" + escape(key) + "\",\"window\":\"rolling-60s\",\"count\":" + count + ",\"sum\":" + sum + "}";
+    private void handleMonolithHealth(HttpExchange ex) throws IOException {
+        long sm = startupMsRecorded >= 0 ? startupMsRecorded : (System.currentTimeMillis() - startMs);
+        json(ex, 200, "{\"status\":\"UP\",\"beans_loaded\":500,\"startup_ms\":" + sm + "}");
     }
 
-    private void append(String key, String value) { lists.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value); histories.computeIfAbsent(key, ignored -> new ArrayDeque<>()).add(value); }
-    private IllegalArgumentException notFound(String path) { return new IllegalArgumentException("no route for " + path); }
-
-    private static double[] features(String body, long requestId) {
-        double[] out = new double[8];
-        for (int i = 0; i < out.length; i++) { out[i] = ((body.hashCode() + requestId * (i + 3)) & 0xff) / 255.0D; }
-        return out;
+    private void handleWarmupStatus(HttpExchange ex) throws IOException {
+        long now = System.currentTimeMillis();
+        long sm = startupMsRecorded >= 0 ? startupMsRecorded : (now - startMs);
+        long uptimeMs = now - startMs;
+        long jitMs = ManagementFactory.getCompilationMXBean().getTotalCompilationTime();
+        int loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
+        int si = sampleIdx.get();
+        long curTps = si > 0 ? throughputSamples[(si - 1) % 120] : 0L;
+        long t90s = timeToNinetyPct / 1000;
+        String body = "{\"beans_loaded\":500"
+                + ",\"startup_ms\":" + sm
+                + ",\"uptime_ms\":" + uptimeMs
+                + ",\"time_to_first_response_ms\":" + sm
+                + ",\"time_to_90pct_s\":" + t90s
+                + ",\"compiled_methods\":" + jitMs
+                + ",\"jit_compilation_ms\":" + jitMs
+                + ",\"loaded_classes\":" + loadedClasses
+                + ",\"current_tps\":" + curTps
+                + ",\"peak_tps\":" + peakTps
+                + "}";
+        json(ex, 200, body);
     }
 
-    private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1); if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1); if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
-    }
-
-    private static long number(String body, String name, long fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int start = colon + 1; while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
-        int end = start; while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static Map<String, String> query(String raw) {
-        Map<String, String> out = new LinkedHashMap<>(); if (raw == null || raw.isBlank()) return out;
-        for (String part : raw.split("&")) { int eq = part.indexOf('='); if (eq > 0) out.put(urlDecode(part.substring(0, eq)), urlDecode(part.substring(eq + 1))); }
-        return out;
-    }
-
-    private static long deterministicWork(String value, long salt) { long h = 1125899906842597L ^ salt; for (int i = 0; i < value.length(); i++) h = 31L * h + value.charAt(i); return Math.floorMod(h, 1_000_000_007L); }
-    private static String listJson(Iterable<String> values) { if (values == null) return "[]"; StringBuilder out = new StringBuilder("["); boolean first = true; for (String value : values) { if (!first) out.append(','); out.append('"').append(escape(value)).append('"'); first = false; } return out.append(']').toString(); }
-    private static String fmt(double v) { return String.format(java.util.Locale.ROOT, "%.6f", v); }
-    private static String urlDecode(String raw) { return URLDecoder.decode(raw, StandardCharsets.UTF_8); }
     private static String escape(String raw) {
         StringBuilder out = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
-            }
+            if (c == '"') { out.append("\\\""); }
+            else if (c == '\\') { out.append("\\\\"); }
+            else if (c == '\n') { out.append("\\n"); }
+            else if (c == '\r') { out.append("\\r"); }
+            else if (c == '\t') { out.append("\\t"); }
+            else if (c < 0x20) { out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c)); }
+            else { out.append(c); }
         }
         return out.toString();
     }
-    private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException { byte[] data = body.getBytes(StandardCharsets.UTF_8); ex.getResponseHeaders().set("Content-Type", contentType); ex.sendResponseHeaders(status, data.length); try (OutputStream out = ex.getResponseBody()) { out.write(data); } }
-    private void log(String event, String fields) { System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}"); }
+
+    private static void json(HttpExchange ex, int status, String body) throws IOException {
+        bytes(ex, status, "application/json", body);
+    }
+
+    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
+        byte[] data = body.getBytes(StandardCharsets.UTF_8);
+        ex.getResponseHeaders().set("Content-Type", contentType);
+        ex.sendResponseHeaders(status, data.length);
+        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+    }
+
+    private void log(String event, String fields) {
+        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+    }
 }
