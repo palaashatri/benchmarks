@@ -1,7 +1,7 @@
 {
   "schema_version": "1.0.0",
   "workloads": [
-    {"id":"00-runtime-compatibility","path":"benchmarks/00-runtime-compatibility","tier":"tier-1","min_jdk":8,"max_jdk":25,"status":"Java 8 bytecode compatibility-lane smoke workload"},
+    {"id":"00-runtime-compatibility","path":"benchmarks/00-runtime-compatibility","tier":"tier-1","min_jdk":8,"max_jdk":25,"status":"one hashed Java 8 artifact reused across runtime smoke runs"},
     {"id":"01-fintech-ledger","path":"benchmarks/01-fintech-ledger","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"functional prototype; measurement telemetry invalid"},
     {"id":"02-microservices-mesh","path":"benchmarks/02-microservices-mesh","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"single-JVM service-mesh prototype"},
     {"id":"03-streaming-analytics","path":"benchmarks/03-streaming-analytics","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"in-memory queue/window prototype"},
@@ -13,7 +13,7 @@
     {"id":"09-onnx-inference","path":"benchmarks/09-onnx-inference","tier":"tier-0","min_jdk":17,"max_jdk":25,"status":"truthful Java fallback only; ONNX session not implemented"},
     {"id":"10-microservices-fleet","path":"benchmarks/10-microservices-fleet","tier":"tier-0","min_jdk":17,"max_jdk":25,"status":"single-process fleet simulation"},
     {"id":"11-autoscaling-burst","path":"benchmarks/11-autoscaling-burst","tier":"tier-0","min_jdk":17,"max_jdk":25,"status":"local thread-pool scaling simulation"},
-    {"id":"12-hft-trading-gateway","path":"benchmarks/12-hft-trading-gateway","tier":"tier-0","min_jdk":21,"max_jdk":25,"status":"HTTP order-book prototype; not gRPC/HdrHistogram"},
+    {"id":"12-hft-trading-gateway","path":"benchmarks/12-hft-trading-gateway","tier":"tier-0","min_jdk":21,"max_jdk":25,"status":"correct synthetic symbol-isolated partial-fill engine; HTTP only, no HdrHistogram"},
     {"id":"13-large-monolith","path":"benchmarks/13-large-monolith","tier":"tier-0","min_jdk":17,"max_jdk":25,"status":"500 generated proxy classes; still not an enterprise monolith"}
   ]
 }
