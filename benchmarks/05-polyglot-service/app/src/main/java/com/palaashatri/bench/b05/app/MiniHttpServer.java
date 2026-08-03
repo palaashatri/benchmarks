@@ -24,7 +24,6 @@ import org.mozilla.javascript.ScriptableObject;
 public final class MiniHttpServer {
     private static final int MAX_SCRIPT_CHARS = 1_024;
     private static final int INSTRUCTION_BUDGET = 100_000;
-
     private static final String RULE_1 =
             "function score(data){return data.amount>1000?0.9:data.amount/1000.0*0.5;}score(data);";
     private static final String RULE_2 =
@@ -44,9 +43,9 @@ public final class MiniHttpServer {
 
     public MiniHttpServer(String benchmark, String ignoredTitle) {
         this.benchmark = benchmark;
-        compile("rule-1", RULE_1);
-        compile("rule-2", RULE_2);
-        compile("rule-3", RULE_3);
+        scripts.put("rule-1", compileUncached("rule-1", RULE_1));
+        scripts.put("rule-2", compileUncached("rule-2", RULE_2));
+        scripts.put("rule-3", compileUncached("rule-3", RULE_3));
     }
 
     public void start(int port) throws IOException {
@@ -62,9 +61,7 @@ public final class MiniHttpServer {
                 "{\"event\":\"started\",\"benchmark\":\"%s\","
                         + "\"engine\":\"rhino-interpreter\",\"host_class_access\":false,"
                         + "\"port\":%d,\"pid\":%d}%n",
-                benchmark,
-                port,
-                ProcessHandle.current().pid());
+                benchmark, port, ProcessHandle.current().pid());
     }
 
     private void health(HttpExchange exchange) throws IOException {
@@ -149,20 +146,26 @@ public final class MiniHttpServer {
     }
 
     private Evaluation evaluate(String key, String source, Map<String, Object> data) {
-        Script existing = scripts.get(key);
-        boolean hit = existing != null;
+        Script script = scripts.get(key);
+        boolean hit = script != null;
         long compileNs = 0;
-        Script script = existing;
         if (script == null) {
             long started = System.nanoTime();
-            Script compiled = compile(key, source);
+            Script compiled = compileUncached(key, source);
             compileNs = System.nanoTime() - started;
-            Script raced = scripts.putIfAbsent(key, compiled);
-            script = raced == null ? compiled : raced;
-            hit = raced != null;
-            if (hit) compileNs = 0;
+            Script existing = scripts.putIfAbsent(key, compiled);
+            if (existing == null) {
+                script = compiled;
+                cacheMisses.incrementAndGet();
+            } else {
+                script = existing;
+                hit = true;
+                compileNs = 0;
+                cacheHits.incrementAndGet();
+            }
+        } else {
+            cacheHits.incrementAndGet();
         }
-        if (hit) cacheHits.incrementAndGet(); else cacheMisses.incrementAndGet();
 
         Script selected = script;
         long started = System.nanoTime();
@@ -183,12 +186,11 @@ public final class MiniHttpServer {
         return new Evaluation(Context.toString(result), hit, compileNs, executionNs);
     }
 
-    private Script compile(String key, String source) {
+    private Script compileUncached(String key, String source) {
         long started = System.nanoTime();
         Script script = contextFactory.call((ContextAction<Script>) context ->
                 context.compileString(source, key, 1, null));
         compilationNanos.add(System.nanoTime() - started);
-        scripts.putIfAbsent(key, script);
         return script;
     }
 
@@ -200,7 +202,8 @@ public final class MiniHttpServer {
             throw new IllegalArgumentException("script exceeds " + MAX_SCRIPT_CHARS + " characters");
         }
         String lower = source.toLowerCase(java.util.Locale.ROOT);
-        for (String token : new String[]{"packages", "javapackage", "importclass", "importpackage", "getclass"}) {
+        for (String token : new String[]{
+                "packages", "javapackage", "importclass", "importpackage", "getclass"}) {
             if (lower.contains(token)) {
                 throw new IllegalArgumentException("host access token is prohibited: " + token);
             }
@@ -210,22 +213,22 @@ public final class MiniHttpServer {
     private static Map<String, Object> parseData(String body) {
         Map<String, Object> values = new LinkedHashMap<>();
         int key = body.indexOf("\"data\"");
-        if (key < 0) return values;
-        int open = body.indexOf('{', key);
+        int open = key < 0 ? -1 : body.indexOf('{', key);
         int close = open < 0 ? -1 : body.indexOf('}', open + 1);
         if (open < 0 || close < 0) return values;
         String object = body.substring(open + 1, close);
         int position = 0;
         while (position < object.length()) {
             int keyStart = object.indexOf('"', position);
-            if (keyStart < 0) break;
-            int keyEnd = object.indexOf('"', keyStart + 1);
-            if (keyEnd < 0) break;
+            int keyEnd = keyStart < 0 ? -1 : object.indexOf('"', keyStart + 1);
+            if (keyStart < 0 || keyEnd < 0) break;
             String name = object.substring(keyStart + 1, keyEnd);
             int colon = object.indexOf(':', keyEnd + 1);
             if (colon < 0) break;
             int valueStart = colon + 1;
-            while (valueStart < object.length() && Character.isWhitespace(object.charAt(valueStart))) valueStart++;
+            while (valueStart < object.length() && Character.isWhitespace(object.charAt(valueStart))) {
+                valueStart++;
+            }
             if (valueStart < object.length() && object.charAt(valueStart) == '"') {
                 int valueEnd = object.indexOf('"', valueStart + 1);
                 if (valueEnd < 0) break;
@@ -274,11 +277,10 @@ public final class MiniHttpServer {
     private static String stringField(String body, String name, String fallback) {
         String key = "\"" + name + "\"";
         int at = body.indexOf(key);
-        if (at < 0) return fallback;
-        int colon = body.indexOf(':', at + key.length());
-        int start = body.indexOf('"', colon + 1);
+        int colon = at < 0 ? -1 : body.indexOf(':', at + key.length());
+        int start = colon < 0 ? -1 : body.indexOf('"', colon + 1);
         int end = start < 0 ? -1 : body.indexOf('"', start + 1);
-        return colon < 0 || start < 0 || end < 0
+        return at < 0 || colon < 0 || start < 0 || end < 0
                 ? fallback
                 : body.substring(start + 1, end);
     }
@@ -286,8 +288,7 @@ public final class MiniHttpServer {
     private static double doubleField(String body, String name, double fallback) {
         String key = "\"" + name + "\"";
         int at = body.indexOf(key);
-        if (at < 0) return fallback;
-        int colon = body.indexOf(':', at + key.length());
+        int colon = at < 0 ? -1 : body.indexOf(':', at + key.length());
         if (colon < 0) return fallback;
         int start = colon + 1;
         while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
@@ -310,12 +311,8 @@ public final class MiniHttpServer {
     }
 
     private static String escape(String value) {
-        return value == null
-                ? ""
-                : value.replace("\\", "\\\\")
-                        .replace("\"", "\\\"")
-                        .replace("\n", "\\n")
-                        .replace("\r", "\\r");
+        return value == null ? "" : value.replace("\\", "\\\\")
+                .replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
     private static void json(HttpExchange exchange, int status, String body)
@@ -323,8 +320,7 @@ public final class MiniHttpServer {
         bytes(exchange, status, "application/json", body);
     }
 
-    private static void bytes(
-            HttpExchange exchange, int status, String type, String body)
+    private static void bytes(HttpExchange exchange, int status, String type, String body)
             throws IOException {
         byte[] payload = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", type);
