@@ -2,6 +2,7 @@
 """Runtime-safe entry point layered over the dependency-free controller."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -101,6 +102,62 @@ def _sanitize_legacy_result(result: dict) -> dict:
     return result
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _build_shared_artifacts(plan: dict, run_dir: Path) -> dict[str, dict]:
+    """Build compatibility artifacts once and reuse them across runtime runs."""
+    compatibility_items = [
+        item for item in plan["items"] if item["workload"] == "00-runtime-compatibility"
+    ]
+    if not compatibility_items:
+        return {}
+
+    runtime_by_id = {runtime["id"]: runtime for runtime in core.load_runtimes()}
+    build_candidates = [
+        item for item in compatibility_items
+        if runtime_by_id.get(item["runtime"], {}).get("tools", {}).get("javac")
+    ]
+    if not build_candidates:
+        raise core.BenchError("the compatibility lane requires one discovered JDK with javac")
+    builder = max(build_candidates, key=lambda item: item["feature_version"])
+    app_dir = core.ROOT / builder["workload_path"] / "app"
+    artifact_dir = run_dir / "artifacts"
+    artifact_dir.mkdir()
+    artifact_path = (artifact_dir / "compatibility-app-java8.jar").resolve()
+
+    env = os.environ.copy()
+    env["JAVA_HOME"] = builder["java_home"]
+    env["PATH"] = str(Path(builder["java_home"]) / "bin") + os.pathsep + env.get("PATH", "")
+    built = core.command(
+        [str(app_dir / "run.sh"), "artifact", str(artifact_path)],
+        cwd=app_dir,
+        env=env,
+        timeout=120,
+    )
+    (artifact_dir / "build.log").write_text(built.combined + "\n")
+    if built.returncode != 0 or not artifact_path.exists():
+        raise core.BenchError(
+            f"compatibility artifact build failed ({built.returncode}): {built.combined[-400:]}")
+
+    metadata = {
+        "path": str(artifact_path),
+        "relative_path": str(artifact_path.relative_to(run_dir)),
+        "sha256": _sha256(artifact_path),
+        "bytecode_target": 8,
+        "builder_runtime": builder["runtime"],
+    }
+    (artifact_dir / "artifacts.json").write_text(json.dumps({
+        "00-runtime-compatibility": metadata,
+    }, indent=2) + "\n")
+    return {"00-runtime-compatibility": metadata}
+
+
 def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
     if plan["run_kind"] == "benchmark":
         raise core.BenchError("benchmark execution is blocked until a workload reaches Tier 2")
@@ -111,6 +168,8 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
     (run_dir / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
     (run_dir / "environment.json").write_text(
         json.dumps(core.environment_fingerprint(), indent=2) + "\n")
+    shared_artifacts = _build_shared_artifacts(plan, run_dir)
+
     outputs = []
     for index, item in enumerate(plan["items"], 1):
         item_dir = run_dir / f"{index:03d}-{item['workload']}-{item['runtime']}-{item['gc']}"
@@ -131,6 +190,9 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
         app_env["JAVA_TOOL_OPTIONS"] = " ".join(
             value for value in (base_env.get("JAVA_TOOL_OPTIONS", "").strip(), selected_flags) if value)
         harness_env = base_env.copy()
+        artifact = shared_artifacts.get(item["workload"])
+        if artifact:
+            app_env["BENCH_APP_ARTIFACT"] = artifact["path"]
 
         port = core.free_port()
         app_log = (item_dir / "app.log").open("w")
@@ -165,6 +227,13 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
             normalized["run_kind"] = plan["run_kind"]
             normalized["measurement_valid"] = False
             normalized = _sanitize_legacy_result(normalized)
+            if artifact:
+                normalized["workload_artifact"] = {
+                    "path": artifact["relative_path"],
+                    "sha256": artifact["sha256"],
+                    "bytecode_target": artifact["bytecode_target"],
+                    "builder_runtime": artifact["builder_runtime"],
+                }
         except Exception as exc:
             normalized = {
                 "schema_version": core.RESULT_SCHEMA_VERSION,
