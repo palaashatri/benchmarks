@@ -146,6 +146,11 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
     return run_dir
 
 
-core.build_plan = constrained_build_plan
-core.run_plan = safe_run_plan
-raise SystemExit(core.main())
+def main() -> int:
+    core.build_plan = constrained_build_plan
+    core.run_plan = safe_run_plan
+    return core.main()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
