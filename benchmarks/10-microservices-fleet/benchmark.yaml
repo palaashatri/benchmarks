@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"10-microservices-fleet",
+  "tier":"tier-0",
+  "lane":"feature",
+  "min_jdk":17,
+  "max_jdk":25,
+  "implementation":"atomic logical service-generation replacement inside one JVM",
+  "external_processes":0,
+  "measurement_valid":false,
+  "invalid_reasons":["logical services are not separate JVMs","replacement does not model process restart or readiness"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["GET /api/v1/fleet/status","POST /api/v1/fleet/deploy/{id}","GET /api/v1/service/{id}/inventory/{item}"]
+}
