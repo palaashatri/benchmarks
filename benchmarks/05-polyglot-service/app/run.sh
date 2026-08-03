@@ -1,119 +1,118 @@
 #!/usr/bin/env sh
 set -eu
 COMMAND="${1:-help}"
-if [ "$#" -gt 0 ]; then shift; fi
+[ "$#" -eq 0 ] || shift
 MAIN_CLASS="com.palaashatri.bench.b05.app.BenchmarkApp"
-JAVA_RELEASE="21"
-ROLE="app"
-DEFAULT_PORT="18005"
-SMOKE_GETS='/health|/api/v1/scripts'
-SMOKE_POSTS='/api/v1/score::{"script":"function f(data){return data.value*2;}f(data);","data":{"value":21.0}}|/api/v1/score/rule/1::{"amount":750}'
 CLASSES_DIR="build/run-sh/classes"
+DEPS_DIR="build/run-sh/deps"
 SOURCES_FILE="build/run-sh/sources.txt"
-RHINO_JAR="build/run-sh/rhino-1.7.15.jar"
+RHINO_JAR="$DEPS_DIR/rhino-1.7.15.jar"
 
-download_rhino() {
+fetch_dependency() {
+  mkdir -p "$DEPS_DIR"
   if [ ! -f "$RHINO_JAR" ]; then
-    mkdir -p "$(dirname "$RHINO_JAR")"
-    echo "Downloading Rhino 1.7.15..." >&2
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL -o "$RHINO_JAR" "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar"
-    elif command -v wget >/dev/null 2>&1; then
-      wget -q -O "$RHINO_JAR" "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar"
-    else
-      echo "Neither curl nor wget found; cannot download Rhino jar" >&2; exit 1
-    fi
-    echo "Rhino downloaded." >&2
+    curl --fail --location --silent --show-error \
+      "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar" \
+      --output "$RHINO_JAR"
   fi
 }
 
-compile_sources() {
+compile() {
+  fetch_dependency
   mkdir -p "$CLASSES_DIR"
-  download_rhino
-  find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
-  if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
-  javac --release "$JAVA_RELEASE" -cp "$RHINO_JAR" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
+  javac --release 21 -cp "$RHINO_JAR" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; exec java -cp "$CLASSES_DIR:$RHINO_JAR" "$MAIN_CLASS" "$@"; }
-
-wait_for_health() {
-  url="$1"
-  python3 - "$url" <<'PYWAIT'
-import sys,time,urllib.request
-url=sys.argv[1]; last=None
-for _ in range(80):
-    try:
-        with urllib.request.urlopen(url, timeout=0.5) as response:
-            if response.status == 200: raise SystemExit(0)
-    except SystemExit: raise
-    except Exception as exc: last=exc
-    time.sleep(0.1)
-print(f"Timed out waiting for {url}: {last}", file=sys.stderr); raise SystemExit(1)
-PYWAIT
+run() {
+  compile
+  exec java -cp "$CLASSES_DIR:$RHINO_JAR" "$MAIN_CLASS" "$@"
 }
 
-smoke_app() {
-  compile_sources
-  port="${PORT:-$DEFAULT_PORT}"
+free_port() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1', 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+test_app() {
+  compile
+  port="${PORT:-$(free_port)}"
+  token="dynamic-test-$$-$(date +%s)"
   mkdir -p build/run-sh
-  java -cp "$CLASSES_DIR:$RHINO_JAR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
-  pid="$!"
-  trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-  wait_for_health "http://127.0.0.1:$port/health"
-  python3 - "$port" "$SMOKE_GETS" "$SMOKE_POSTS" <<'PYAPP'
-import sys, urllib.request
-port, gets, posts = sys.argv[1], sys.argv[2], sys.argv[3]
-base=f"http://127.0.0.1:{port}"
-for path in ["/health", "/metrics"] + [p for p in gets.split('|') if p]:
-    with urllib.request.urlopen(base + path, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-for item in [p for p in posts.split('|') if p]:
-    path, body = item.split('::', 1)
-    req = urllib.request.Request(base + path, data=body.encode(), method='POST', headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-print(f"app smoke passed on port {port}")
-PYAPP
+  BENCH_RUN_TOKEN="$token" java -cp "$CLASSES_DIR:$RHINO_JAR" \
+    "$MAIN_CLASS" "$port" >build/run-sh/app-test.log 2>&1 &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
+  python3 - "$port" "$pid" "$token" <<'PY'
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+port, expected_pid, token = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+base = f'http://127.0.0.1:{port}'
+for _ in range(150):
+    try:
+        with urllib.request.urlopen(base + '/runtime', timeout=.3) as response:
+            runtime = json.load(response)
+        if runtime['pid'] == expected_pid and runtime['run_token'] == token:
+            break
+    except Exception:
+        time.sleep(.1)
+else:
+    raise SystemExit('owned dynamic-language process did not become ready')
+
+def post(path, payload):
+    request = urllib.request.Request(
+        base + path,
+        data=json.dumps(payload).encode(),
+        method='POST',
+        headers={'Content-Type': 'application/json'},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.status, json.load(response)
+
+status, rule = post('/api/v1/score/rule/1', {'amount': 750})
+assert status == 200 and rule['cache_hit'] is True
+assert abs(float(rule['result']) - 0.375) < 1e-9
+
+source = 'function score(data){return data.value*2.0;}score(data);'
+status, first = post('/api/v1/score', {'script': source, 'data': {'value': 21}})
+status, second = post('/api/v1/score', {'script': source, 'data': {'value': 21}})
+assert first['result'] == '42' and first['cache_hit'] is False and first['compile_ns'] > 0
+assert second['result'] == '42' and second['cache_hit'] is True and second['compile_ns'] == 0
+
+try:
+    post('/api/v1/score', {'script': 'Packages.java.lang.System.exit(0);', 'data': {}})
+    raise AssertionError('host-access script should be rejected')
+except urllib.error.HTTPError as error:
+    assert error.code == 400
+    rejected = json.load(error)
+    assert rejected['error'] == 'invalid_script'
+
+with urllib.request.urlopen(base + '/api/v1/scripts') as response:
+    cache = json.load(response)
+assert cache['cache_misses'] == 1
+assert cache['cache_hits'] >= 2
+assert cache['host_class_access'] is False
+assert cache['rejected_scripts'] >= 1
+print('sandbox, deterministic result, and cache-semantics checks passed')
+PY
   kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   trap - EXIT INT TERM
 }
 
-smoke_harness() {
-  compile_sources
-  mkdir -p build/run-sh
-  port="${PORT:-$DEFAULT_PORT}"
-  if [ -z "${BASE_URL:-}" ] && [ -x ../app/run.sh ]; then
-    (cd ../app && ./run.sh run "$port" > build/run-sh/harness-owned-app.log 2>&1 & echo $! > ../harness/build/run-sh/app.pid)
-    pid="$(cat build/run-sh/app.pid)"
-    trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-    wait_for_health "http://127.0.0.1:$port/health"
-    base_url="http://127.0.0.1:$port"
-  else
-    base_url="${BASE_URL:-http://127.0.0.1:$port}"
-  fi
-  requests="${REQUESTS:-4}"
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --out build/run-sh/results.json > build/run-sh/harness-smoke.log
-  test -s build/run-sh/results.json
-  cat build/run-sh/results.json
-  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; trap - EXIT INT TERM; fi
-}
-
-usage() { cat <<USAGE
-Usage: ./run.sh <command> [args]
-Commands:
-  build        Compile local Java sources with javac --release $JAVA_RELEASE.
-  test         Run app endpoint smoke or live app+harness smoke.
-  run [args]   Compile and run $MAIN_CLASS with provided args.
-  clean        Remove build/run-sh artifacts.
-  help         Show this message.
-USAGE
-}
 case "$COMMAND" in
-  build) compile_sources ;;
-  test) if [ "$ROLE" = "app" ]; then smoke_app; else smoke_harness; fi ;;
-  run) run_java "$@" ;;
-  clean) rm -rf build/run-sh ;;
-  help|-h|--help) usage ;;
-  *) echo "Unknown command: $COMMAND" >&2; usage >&2; exit 2 ;;
+  build) compile ;;
+  test) test_app ;;
+  run) run "$@" ;;
+  clean) rm -rf build ;;
+  help|-h|--help) echo 'Usage: ./run.sh {build|test|run|clean}' ;;
+  *) echo "Unknown command: $COMMAND" >&2; exit 2 ;;
 esac

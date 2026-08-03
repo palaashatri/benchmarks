@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  controller:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile controller modules
+        run: python3 -m py_compile tools/benchctl.py tools/benchctl_entry.py tools/check_repository.py
+      - name: Unit tests
+        run: python3 -m unittest discover -s tools/tests -v
+      - name: Repository hygiene
+        run: python3 tools/check_repository.py
+      - name: Validate experiment manifests
+        run: |
+          ./benchctl validate experiments/quick.yaml
+          ./benchctl validate experiments/standard.yaml
+          ./benchctl validate experiments/gc-focused.yaml
+
+  runtime-discovery:
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['8', '11', '17', '21', '25']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Discover runtime and capabilities
+        run: |
+          ./benchctl doctor
+          ./benchctl discover-runtimes
+          ./benchctl list-runtimes
+          ./benchctl list-capabilities
+
+  compatibility-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['8', '25']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Java 8 bytecode compatibility workload
+        run: |
+          (cd benchmarks/00-runtime-compatibility/app && ./run.sh test)
+          (cd benchmarks/00-runtime-compatibility/harness && ./run.sh test)
+
+  repaired-workload-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Ledger correctness and truthful harness
+        run: |
+          (cd benchmarks/01-fintech-ledger/app && ./run.sh test)
+          (cd benchmarks/01-fintech-ledger/harness && ./run.sh test)
+      - name: Vector and FFM equivalence
+        run: cd benchmarks/04-ml-inference-panama-vector/app && ./run.sh test
+      - name: Chat simulator semantics
+        run: cd benchmarks/06-massive-chat-loom/app && ./run.sh test
+      - name: Cold-start child isolation
+        run: cd benchmarks/07-coldstart-suite/app && ./run.sh test
+      - name: Inference mode truthfulness
+        run: cd benchmarks/09-onnx-inference/app && ./run.sh test
+      - name: Synthetic gateway invariants
+        run: cd benchmarks/12-hft-trading-gateway/app && ./run.sh test
+      - name: Monolith class surface
+        run: cd benchmarks/13-large-monolith/app && ./run.sh test

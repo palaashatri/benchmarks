@@ -4,11 +4,22 @@ plugins {
 }
 
 group = "com.palaashatri.bench"
-version = "0.1.0"
+version = "0.2.0"
+
+repositories {
+    mavenCentral()
+}
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
+}
+
+dependencies {
+    implementation("com.h2database:h2:2.2.224")
+    implementation("com.zaxxer:HikariCP:5.1.0")
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.9")
 }
 
 tasks.withType<JavaCompile>().configureEach {

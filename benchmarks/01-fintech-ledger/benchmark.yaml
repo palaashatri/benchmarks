@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"01-fintech-ledger",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"H2 in-memory JDBC ledger with HikariCP and Micrometer",
+  "process_model":"single application JVM",
+  "measurement_valid":false,
+  "invalid_reasons":["application-process telemetry and open-loop shared harness are not yet integrated"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /transfers","GET /accounts/{id}/balance","GET /accounts/{id}/transactions"]
+}

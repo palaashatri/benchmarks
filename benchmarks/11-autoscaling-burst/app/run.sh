@@ -1,102 +1,98 @@
 #!/usr/bin/env sh
 set -eu
 COMMAND="${1:-help}"
-if [ "$#" -gt 0 ]; then shift; fi
+[ "$#" -eq 0 ] || shift
 MAIN_CLASS="com.palaashatri.bench.b11.app.BenchmarkApp"
-JAVA_RELEASE="17"
-ROLE="app"
-DEFAULT_PORT="18011"
-SMOKE_GETS='/api/v1/catalog/health|/api/v1/metrics/scaling'
-SMOKE_POSTS='/api/v1/catalog/search::{"query":"shoes","category":"footwear"}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 
-compile_sources() {
+compile() {
   mkdir -p "$CLASSES_DIR"
-  find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
-  if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
-  javac --release "$JAVA_RELEASE" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
+  javac --release 17 -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
-
-wait_for_health() {
-  url="$1"
-  python3 - "$url" <<'PYWAIT'
-import sys,time,urllib.request
-url=sys.argv[1]; last=None
-for _ in range(80):
-    try:
-        with urllib.request.urlopen(url, timeout=0.5) as response:
-            if response.status == 200: raise SystemExit(0)
-    except SystemExit: raise
-    except Exception as exc: last=exc
-    time.sleep(0.1)
-print(f"Timed out waiting for {url}: {last}", file=sys.stderr); raise SystemExit(1)
-PYWAIT
+run() {
+  compile
+  exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"
 }
 
-smoke_app() {
-  compile_sources
-  port="${PORT:-$DEFAULT_PORT}"
+free_port() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1', 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+test_app() {
+  compile
+  port="${PORT:-$(free_port)}"
+  token="capacity-test-$$-$(date +%s)"
   mkdir -p build/run-sh
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
-  pid="$!"
-  trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-  wait_for_health "http://127.0.0.1:$port/health"
-  python3 - "$port" "$SMOKE_GETS" "$SMOKE_POSTS" <<'PYAPP'
-import sys, urllib.request
-port, gets, posts = sys.argv[1], sys.argv[2], sys.argv[3]
-base=f"http://127.0.0.1:{port}"
-for path in ["/health", "/metrics"] + [p for p in gets.split('|') if p]:
-    with urllib.request.urlopen(base + path, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-for item in [p for p in posts.split('|') if p]:
-    path, body = item.split('::', 1)
-    req = urllib.request.Request(base + path, data=body.encode(), method='POST', headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-print(f"app smoke passed on port {port}")
-PYAPP
+  BENCH_RUN_TOKEN="$token" java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" \
+    >build/run-sh/app-test.log 2>&1 &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
+  python3 - "$port" "$pid" "$token" <<'PY'
+import concurrent.futures
+import json
+import sys
+import time
+import urllib.request
+
+port, expected_pid, token = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+base = f'http://127.0.0.1:{port}'
+for _ in range(150):
+    try:
+        with urllib.request.urlopen(base + '/runtime', timeout=.3) as response:
+            runtime = json.load(response)
+        if runtime['pid'] == expected_pid and runtime['run_token'] == token:
+            break
+    except Exception:
+        time.sleep(.1)
+else:
+    raise SystemExit('owned capacity simulator did not become ready')
+
+def submit(index):
+    request = urllib.request.Request(
+        base + '/api/v1/catalog/search',
+        data=json.dumps({'query': f'item-{index}', 'work_ms': 200}).encode(),
+        method='POST',
+        headers={'Content-Type': 'application/json'},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = json.load(response)
+        return response.status, payload
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=32) as pool:
+    responses = list(pool.map(submit, range(80)))
+assert all(status == 202 and body['accepted'] is True for status, body in responses)
+
+state = None
+for _ in range(80):
+    with urllib.request.urlopen(base + '/api/v1/metrics/scaling') as response:
+        state = json.load(response)
+    if state['scale_up_count'] > 0:
+        break
+    time.sleep(.1)
+assert state['scale_up_count'] > 0, state
+assert state['worker_capacity'] > 2, state
+assert state['external_replicas'] == 0
+assert state['scaling_model'] == 'single-jvm-thread-pool'
+print('safe local capacity scale-up check passed')
+PY
   kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   trap - EXIT INT TERM
 }
 
-smoke_harness() {
-  compile_sources
-  mkdir -p build/run-sh
-  port="${PORT:-$DEFAULT_PORT}"
-  if [ -z "${BASE_URL:-}" ] && [ -x ../app/run.sh ]; then
-    (cd ../app && ./run.sh run "$port" > build/run-sh/harness-owned-app.log 2>&1 & echo $! > ../harness/build/run-sh/app.pid)
-    pid="$(cat build/run-sh/app.pid)"
-    trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-    wait_for_health "http://127.0.0.1:$port/health"
-    base_url="http://127.0.0.1:$port"
-  else
-    base_url="${BASE_URL:-http://127.0.0.1:$port}"
-  fi
-  requests="${REQUESTS:-4}"
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --out build/run-sh/results.json > build/run-sh/harness-smoke.log
-  test -s build/run-sh/results.json
-  cat build/run-sh/results.json
-  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; trap - EXIT INT TERM; fi
-}
-
-usage() { cat <<USAGE
-Usage: ./run.sh <command> [args]
-Commands:
-  build        Compile local Java sources with javac --release $JAVA_RELEASE.
-  test         Run app endpoint smoke or live app+harness smoke.
-  run [args]   Compile and run $MAIN_CLASS with provided args.
-  clean        Remove build/run-sh artifacts.
-  help         Show this message.
-USAGE
-}
 case "$COMMAND" in
-  build) compile_sources ;;
-  test) if [ "$ROLE" = "app" ]; then smoke_app; else smoke_harness; fi ;;
-  run) run_java "$@" ;;
-  clean) rm -rf build/run-sh ;;
-  help|-h|--help) usage ;;
-  *) echo "Unknown command: $COMMAND" >&2; usage >&2; exit 2 ;;
+  build) compile ;;
+  test) test_app ;;
+  run) run "$@" ;;
+  clean) rm -rf build ;;
+  help|-h|--help) echo 'Usage: ./run.sh {build|test|run|clean}' ;;
+  *) echo "Unknown command: $COMMAND" >&2; exit 2 ;;
 esac

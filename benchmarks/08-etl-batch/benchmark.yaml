@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"08-etl-batch",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"seeded local CSV generation, parse, aggregate, canonical output, SHA-256 and gzip",
+  "external_storage":false,
+  "measurement_valid":false,
+  "invalid_reasons":["data scale and storage backends are not controlled by the shared controller","legacy harness is closed-loop"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/etl/run","GET /api/v1/etl/{id}/status","GET /api/v1/etl/jobs"]
+}

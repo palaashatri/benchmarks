@@ -11,330 +11,340 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 import org.mozilla.javascript.Context;
+import org.mozilla.javascript.ContextAction;
+import org.mozilla.javascript.ContextFactory;
+import org.mozilla.javascript.EvaluatorException;
 import org.mozilla.javascript.Script;
 import org.mozilla.javascript.Scriptable;
 import org.mozilla.javascript.ScriptableObject;
 
+/** Sandboxed embedded-JavaScript workload running entirely on OpenJDK. */
 public final class MiniHttpServer {
+    private static final int MAX_SCRIPT_CHARS = 1_024;
+    private static final int INSTRUCTION_BUDGET = 100_000;
+    private static final String RULE_1 =
+            "function score(data){return data.amount>1000?0.9:data.amount/1000.0*0.5;}score(data);";
+    private static final String RULE_2 =
+            "function eligible(data){return data.age>=18&&data.income>50000?'approved':'rejected';}eligible(data);";
+    private static final String RULE_3 =
+            "function classify(data){var s=data.text.toLowerCase();return s.indexOf('urgent')>=0?'high':'normal';}classify(data);";
+
     private final String benchmark;
-    private final Map<String, Script> scriptCache = new ConcurrentHashMap<>();
-    private final AtomicLong compileTimeMs = new AtomicLong();
-    private final AtomicLong execTimeMs = new AtomicLong();
+    private final SandboxedContextFactory contextFactory = new SandboxedContextFactory();
+    private final ConcurrentHashMap<String, Script> scripts = new ConcurrentHashMap<>();
+    private final AtomicLong requests = new AtomicLong();
     private final AtomicLong cacheHits = new AtomicLong();
-    private final AtomicLong polyglotRequests = new AtomicLong();
-    private final AtomicLong totalRequests = new AtomicLong();
+    private final AtomicLong cacheMisses = new AtomicLong();
+    private final AtomicLong rejectedScripts = new AtomicLong();
+    private final LongAdder compilationNanos = new LongAdder();
+    private final LongAdder executionNanos = new LongAdder();
 
-    private static final String RULE_1 = "function score(data) { return data.amount > 1000 ? 0.9 : data.amount / 1000.0 * 0.5; } score(data);";
-    private static final String RULE_2 = "function eligible(data) { return data.age >= 18 && data.income > 50000 ? \"approved\" : \"rejected\"; } eligible(data);";
-    private static final String RULE_3 = "function classify(data) { var s = data.text.toLowerCase(); return s.indexOf(\"urgent\") >= 0 ? \"high\" : \"normal\"; } classify(data);";
-
-    public MiniHttpServer(String benchmark, String title) {
+    public MiniHttpServer(String benchmark, String ignoredTitle) {
         this.benchmark = benchmark;
-        precompileRules();
-    }
-
-    private void precompileRules() {
-        compileAndCache("rule-1", RULE_1);
-        compileAndCache("rule-2", RULE_2);
-        compileAndCache("rule-3", RULE_3);
-    }
-
-    private void compileAndCache(String key, String source) {
-        long start = System.currentTimeMillis();
-        Context cx = Context.enter();
-        try {
-            cx.setOptimizationLevel(9);
-            Script script = cx.compileString(source, key, 1, null);
-            scriptCache.put(key, script);
-        } finally {
-            Context.exit();
-        }
-        compileTimeMs.addAndGet(System.currentTimeMillis() - start);
-        // also pre-cache by source text so evalScript lookup by source works
-        compileAndCacheBySource(source);
-    }
-
-    private void compileAndCacheBySource(String source) {
-        if (scriptCache.containsKey(source)) return;
-        long start = System.currentTimeMillis();
-        Context cx = Context.enter();
-        try {
-            cx.setOptimizationLevel(9);
-            Script script = cx.compileString(source, "<inline>", 1, null);
-            scriptCache.put(source, script);
-        } finally {
-            Context.exit();
-        }
-        compileTimeMs.addAndGet(System.currentTimeMillis() - start);
+        scripts.put("rule-1", compileUncached("rule-1", RULE_1));
+        scripts.put("rule-2", compileUncached("rule-2", RULE_2));
+        scripts.put("rule-3", compileUncached("rule-3", RULE_3));
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
         server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
         server.createContext("/metrics", this::metrics);
-        server.createContext("/actuator/health", this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/", this::route);
+        server.createContext("/api/v1/scripts", this::scriptStatus);
+        server.createContext("/api/v1/score", this::score);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        log("started", "\"port\":" + port);
+        System.out.printf(
+                "{\"event\":\"started\",\"benchmark\":\"%s\","
+                        + "\"engine\":\"rhino-interpreter\",\"host_class_access\":false,"
+                        + "\"port\":%d,\"pid\":%d}%n",
+                benchmark, port, ProcessHandle.current().pid());
     }
 
-    private String evalScript(String scriptSource, Map<String, Object> data) {
-        boolean cached = scriptCache.containsKey(scriptSource);
-        if (cached) {
-            cacheHits.incrementAndGet();
-        } else {
-            // Compile and cache
-            long compStart = System.currentTimeMillis();
-            Context cx = Context.enter();
-            try {
-                cx.setOptimizationLevel(9);
-                Script script = cx.compileString(scriptSource, "<dynamic>", 1, null);
-                scriptCache.put(scriptSource, script);
-            } finally {
-                Context.exit();
-            }
-            compileTimeMs.addAndGet(System.currentTimeMillis() - compStart);
+    private void health(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"status\":\"UP\",\"engine\":\"rhino-interpreter\","
+                        + "\"host_class_access\":false,\"instruction_budget\":"
+                        + INSTRUCTION_BUDGET + ",\"cached_scripts\":" + scripts.size() + "}");
+    }
+
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"pid\":" + ProcessHandle.current().pid()
+                        + ",\"run_token\":\""
+                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
+                        + "\",\"java_version\":\""
+                        + escape(System.getProperty("java.version")) + "\"}");
+    }
+
+    private void scriptStatus(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
         }
+        json(exchange, 200,
+                "{\"engine\":\"rhino-interpreter\",\"cached_scripts\":" + scripts.size()
+                        + ",\"cache_hits\":" + cacheHits.get()
+                        + ",\"cache_misses\":" + cacheMisses.get()
+                        + ",\"rejected_scripts\":" + rejectedScripts.get()
+                        + ",\"host_class_access\":false}");
+    }
 
-        Script script = scriptCache.get(scriptSource);
-
-        long execStart = System.currentTimeMillis();
-        Context cx = Context.enter();
-        Object result;
+    private void score(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
+        }
+        String path = exchange.getRequestURI().getPath();
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         try {
-            Scriptable scope = cx.initStandardObjects();
-            // Create a JS object for data
-            Scriptable dataObj = cx.newObject(scope);
-            for (Map.Entry<String, Object> entry : data.entrySet()) {
-                Object val = entry.getValue();
-                if (val instanceof Double) {
-                    ScriptableObject.putProperty(dataObj, entry.getKey(), val);
-                } else if (val instanceof Long) {
-                    ScriptableObject.putProperty(dataObj, entry.getKey(), ((Long) val).doubleValue());
-                } else if (val instanceof Integer) {
-                    ScriptableObject.putProperty(dataObj, entry.getKey(), ((Integer) val).doubleValue());
-                } else {
-                    ScriptableObject.putProperty(dataObj, entry.getKey(), Context.javaToJS(val, scope));
-                }
-            }
-            ScriptableObject.putProperty(scope, "data", dataObj);
-            result = script.exec(cx, scope);
-        } finally {
-            Context.exit();
-        }
-        execTimeMs.addAndGet(System.currentTimeMillis() - execStart);
-        return Context.toString(result);
-    }
-
-    private void health(HttpExchange ex) throws IOException {
-        json(ex, 200, "{\"status\":\"UP\",\"cached_scripts\":" + scriptCache.size() + "}");
-    }
-
-    private void metrics(HttpExchange ex) throws IOException {
-        long reqs = totalRequests.get();
-        long compilMs = compileTimeMs.get();
-        long execMs = execTimeMs.get();
-        long hits = cacheHits.get();
-        long cacheSize = scriptCache.size();
-        String body = "polyglot_requests_total " + reqs + "\n"
-                + "polyglot_compile_ms_total " + compilMs + "\n"
-                + "polyglot_exec_ms_total " + execMs + "\n"
-                + "polyglot_cache_hits_total " + hits + "\n"
-                + "script_cache_size " + cacheSize + "\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + reqs + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
-    }
-
-    private void route(HttpExchange ex) throws IOException {
-        totalRequests.incrementAndGet();
-        String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        try {
-            String response = handle(method, path, body);
-            json(ex, 200, response);
-        } catch (IllegalArgumentException e) {
-            json(ex, 404, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-        } catch (Exception e) {
-            json(ex, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-        }
-    }
-
-    private String handle(String method, String path, String body) {
-        if ("GET".equals(method) && path.equals("/api/v1/scripts")) {
-            return "{\"cached_scripts\":" + scriptCache.size()
-                    + ",\"compile_ms_total\":" + compileTimeMs.get()
-                    + ",\"exec_ms_total\":" + execTimeMs.get()
-                    + ",\"cache_hits\":" + cacheHits.get() + "}";
-        }
-        if ("POST".equals(method) && path.equals("/api/v1/score")) {
-            return handleCustomScript(body);
-        }
-        if ("POST".equals(method) && path.equals("/api/v1/score/rule/1")) {
-            double amount = numberDouble(body, "amount", 500.0);
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("amount", amount);
-            boolean wasCached = scriptCache.containsKey(RULE_1);
-            String result = evalScript(RULE_1, data);
-            return "{\"result\":\"" + escape(result) + "\",\"exec_ms\":" + execTimeMs.get() + ",\"cached\":" + wasCached + "}";
-        }
-        if ("POST".equals(method) && path.equals("/api/v1/score/rule/2")) {
-            double age = numberDouble(body, "age", 25.0);
-            double income = numberDouble(body, "income", 60000.0);
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("age", age);
-            data.put("income", income);
-            boolean wasCached = scriptCache.containsKey(RULE_2);
-            String result = evalScript(RULE_2, data);
-            return "{\"result\":\"" + escape(result) + "\",\"exec_ms\":" + execTimeMs.get() + ",\"cached\":" + wasCached + "}";
-        }
-        if ("POST".equals(method) && path.equals("/api/v1/score/rule/3")) {
-            String text = field(body, "text", "normal");
-            Map<String, Object> data = new LinkedHashMap<>();
-            data.put("text", text);
-            boolean wasCached = scriptCache.containsKey(RULE_3);
-            String result = evalScript(RULE_3, data);
-            return "{\"result\":\"" + escape(result) + "\",\"exec_ms\":" + execTimeMs.get() + ",\"cached\":" + wasCached + "}";
-        }
-        throw new IllegalArgumentException("no route for " + path);
-    }
-
-    private String handleCustomScript(String body) {
-        // Parse "script" field
-        String script = field(body, "script", "");
-        if (script.isEmpty()) {
-            throw new IllegalArgumentException("missing 'script' field");
-        }
-
-        // Parse "data" object: find "data":{...}
-        Map<String, Object> data = parseDataObject(body);
-
-        boolean wasCached = scriptCache.containsKey(script);
-        String result = evalScript(script, data);
-        long execMs = execTimeMs.get();
-        return "{\"result\":\"" + escape(result) + "\",\"exec_ms\":" + execMs + ",\"cached\":" + wasCached + "}";
-    }
-
-    private Map<String, Object> parseDataObject(String body) {
-        Map<String, Object> data = new LinkedHashMap<>();
-        // Find "data": { ... }
-        String dataKey = "\"data\"";
-        int keyIdx = body.indexOf(dataKey);
-        if (keyIdx < 0) return data;
-        int colon = body.indexOf(':', keyIdx + dataKey.length());
-        if (colon < 0) return data;
-        int braceOpen = body.indexOf('{', colon + 1);
-        if (braceOpen < 0) return data;
-        int braceClose = body.indexOf('}', braceOpen + 1);
-        if (braceClose < 0) return data;
-        String inner = body.substring(braceOpen + 1, braceClose).trim();
-        if (inner.isEmpty()) return data;
-
-        // Parse key-value pairs: "key": value
-        int pos = 0;
-        while (pos < inner.length()) {
-            // Skip whitespace and commas
-            while (pos < inner.length() && (inner.charAt(pos) == ',' || Character.isWhitespace(inner.charAt(pos)))) pos++;
-            if (pos >= inner.length()) break;
-            // Expect "key"
-            if (inner.charAt(pos) != '"') break;
-            int keyStart = pos + 1;
-            int keyEnd = inner.indexOf('"', keyStart);
-            if (keyEnd < 0) break;
-            String key = inner.substring(keyStart, keyEnd);
-            pos = keyEnd + 1;
-            // Skip whitespace and colon
-            while (pos < inner.length() && (inner.charAt(pos) == ':' || Character.isWhitespace(inner.charAt(pos)))) pos++;
-            if (pos >= inner.length()) break;
-            // Parse value
-            char valChar = inner.charAt(pos);
-            if (valChar == '"') {
-                // String value
-                int valStart = pos + 1;
-                int valEnd = inner.indexOf('"', valStart);
-                if (valEnd < 0) break;
-                data.put(key, inner.substring(valStart, valEnd));
-                pos = valEnd + 1;
+            Evaluation evaluation;
+            if ("/api/v1/score/rule/1".equals(path)) {
+                evaluation = evaluate("rule-1", RULE_1, Map.of(
+                        "amount", doubleField(body, "amount", 500)));
+            } else if ("/api/v1/score/rule/2".equals(path)) {
+                evaluation = evaluate("rule-2", RULE_2, Map.of(
+                        "age", doubleField(body, "age", 25),
+                        "income", doubleField(body, "income", 60_000)));
+            } else if ("/api/v1/score/rule/3".equals(path)) {
+                evaluation = evaluate("rule-3", RULE_3, Map.of(
+                        "text", stringField(body, "text", "normal")));
+            } else if ("/api/v1/score".equals(path)) {
+                String source = stringField(body, "script", "");
+                validateDynamicScript(source);
+                evaluation = evaluate("dynamic:" + source, source, parseData(body));
             } else {
-                // Numeric value
-                int valStart = pos;
-                while (pos < inner.length() && inner.charAt(pos) != ',' && inner.charAt(pos) != '}') pos++;
-                String numStr = inner.substring(valStart, pos).trim();
-                try {
-                    data.put(key, Double.parseDouble(numStr));
-                } catch (NumberFormatException e) {
-                    data.put(key, numStr);
-                }
+                json(exchange, 404, "{\"error\":\"not_found\"}");
+                return;
+            }
+            json(exchange, 200,
+                    "{\"result\":\"" + escape(evaluation.result())
+                            + "\",\"cache_hit\":" + evaluation.cacheHit()
+                            + ",\"compile_ns\":" + evaluation.compileNanos()
+                            + ",\"execution_ns\":" + evaluation.executionNanos()
+                            + ",\"engine\":\"rhino-interpreter\"}");
+        } catch (IllegalArgumentException invalid) {
+            rejectedScripts.incrementAndGet();
+            json(exchange, 400,
+                    "{\"error\":\"invalid_script\",\"message\":\""
+                            + escape(invalid.getMessage()) + "\"}");
+        } catch (EvaluatorException budget) {
+            rejectedScripts.incrementAndGet();
+            json(exchange, 422,
+                    "{\"error\":\"script_budget_exceeded\",\"message\":\""
+                            + escape(budget.getMessage()) + "\"}");
+        } catch (RuntimeException failed) {
+            json(exchange, 422,
+                    "{\"error\":\"script_execution_failed\",\"message\":\""
+                            + escape(failed.getMessage()) + "\"}");
+        }
+    }
+
+    private Evaluation evaluate(String key, String source, Map<String, Object> data) {
+        Script script = scripts.get(key);
+        boolean hit = script != null;
+        long compileNs = 0;
+        if (script == null) {
+            long started = System.nanoTime();
+            Script compiled = compileUncached(key, source);
+            compileNs = System.nanoTime() - started;
+            Script existing = scripts.putIfAbsent(key, compiled);
+            if (existing == null) {
+                script = compiled;
+                cacheMisses.incrementAndGet();
+            } else {
+                script = existing;
+                hit = true;
+                compileNs = 0;
+                cacheHits.incrementAndGet();
+            }
+        } else {
+            cacheHits.incrementAndGet();
+        }
+
+        Script selected = script;
+        long started = System.nanoTime();
+        Object result = contextFactory.call((ContextAction<Object>) context -> {
+            Scriptable scope = context.initStandardObjects(null, true);
+            Scriptable object = context.newObject(scope);
+            for (Map.Entry<String, Object> entry : data.entrySet()) {
+                ScriptableObject.putProperty(
+                        object,
+                        entry.getKey(),
+                        Context.javaToJS(entry.getValue(), scope));
+            }
+            ScriptableObject.putProperty(scope, "data", object);
+            return selected.exec(context, scope);
+        });
+        long executionNs = System.nanoTime() - started;
+        executionNanos.add(executionNs);
+        return new Evaluation(Context.toString(result), hit, compileNs, executionNs);
+    }
+
+    private Script compileUncached(String key, String source) {
+        long started = System.nanoTime();
+        Script script = contextFactory.call((ContextAction<Script>) context ->
+                context.compileString(source, key, 1, null));
+        compilationNanos.add(System.nanoTime() - started);
+        return script;
+    }
+
+    private static void validateDynamicScript(String source) {
+        if (source == null || source.isBlank()) {
+            throw new IllegalArgumentException("script is required");
+        }
+        if (source.length() > MAX_SCRIPT_CHARS) {
+            throw new IllegalArgumentException("script exceeds " + MAX_SCRIPT_CHARS + " characters");
+        }
+        String lower = source.toLowerCase(java.util.Locale.ROOT);
+        for (String token : new String[]{
+                "packages", "javapackage", "importclass", "importpackage", "getclass"}) {
+            if (lower.contains(token)) {
+                throw new IllegalArgumentException("host access token is prohibited: " + token);
             }
         }
-        return data;
     }
 
-    private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted);
-        if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length());
-        if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1);
-        if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1);
-        if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
+    private static Map<String, Object> parseData(String body) {
+        Map<String, Object> values = new LinkedHashMap<>();
+        int key = body.indexOf("\"data\"");
+        int open = key < 0 ? -1 : body.indexOf('{', key);
+        int close = open < 0 ? -1 : body.indexOf('}', open + 1);
+        if (open < 0 || close < 0) return values;
+        String object = body.substring(open + 1, close);
+        int position = 0;
+        while (position < object.length()) {
+            int keyStart = object.indexOf('"', position);
+            int keyEnd = keyStart < 0 ? -1 : object.indexOf('"', keyStart + 1);
+            if (keyStart < 0 || keyEnd < 0) break;
+            String name = object.substring(keyStart + 1, keyEnd);
+            int colon = object.indexOf(':', keyEnd + 1);
+            if (colon < 0) break;
+            int valueStart = colon + 1;
+            while (valueStart < object.length() && Character.isWhitespace(object.charAt(valueStart))) {
+                valueStart++;
+            }
+            if (valueStart < object.length() && object.charAt(valueStart) == '"') {
+                int valueEnd = object.indexOf('"', valueStart + 1);
+                if (valueEnd < 0) break;
+                values.put(name, object.substring(valueStart + 1, valueEnd));
+                position = valueEnd + 1;
+            } else {
+                int valueEnd = valueStart;
+                while (valueEnd < object.length() && object.charAt(valueEnd) != ',') valueEnd++;
+                String raw = object.substring(valueStart, valueEnd).trim();
+                try {
+                    values.put(name, Double.parseDouble(raw));
+                } catch (NumberFormatException ignored) {
+                    values.put(name, raw);
+                }
+                position = valueEnd + 1;
+            }
+        }
+        return values;
     }
 
-    private static double numberDouble(String body, String name, double fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted);
-        if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length());
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE dynamic_script_requests_total counter\n"
+                + "dynamic_script_requests_total " + requests.get() + "\n"
+                + "# TYPE dynamic_script_cache_hits_total counter\n"
+                + "dynamic_script_cache_hits_total " + cacheHits.get() + "\n"
+                + "# TYPE dynamic_script_cache_misses_total counter\n"
+                + "dynamic_script_cache_misses_total " + cacheMisses.get() + "\n"
+                + "# TYPE dynamic_script_rejected_total counter\n"
+                + "dynamic_script_rejected_total " + rejectedScripts.get() + "\n"
+                + "# TYPE dynamic_script_compilation_seconds_total counter\n"
+                + "dynamic_script_compilation_seconds_total "
+                + format(compilationNanos.sum() / 1_000_000_000.0) + "\n"
+                + "# TYPE dynamic_script_execution_seconds_total counter\n"
+                + "dynamic_script_execution_seconds_total "
+                + format(executionNanos.sum() / 1_000_000_000.0) + "\n"
+                + "# TYPE dynamic_script_cache_size gauge\n"
+                + "dynamic_script_cache_size " + scripts.size() + "\n"
+                + "# TYPE dynamic_script_host_class_access gauge\n"
+                + "dynamic_script_host_class_access 0\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} "
+                + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
+    }
+
+    private static String stringField(String body, String name, String fallback) {
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        int colon = at < 0 ? -1 : body.indexOf(':', at + key.length());
+        int start = colon < 0 ? -1 : body.indexOf('"', colon + 1);
+        int end = start < 0 ? -1 : body.indexOf('"', start + 1);
+        return at < 0 || colon < 0 || start < 0 || end < 0
+                ? fallback
+                : body.substring(start + 1, end);
+    }
+
+    private static double doubleField(String body, String name, double fallback) {
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        int colon = at < 0 ? -1 : body.indexOf(':', at + key.length());
         if (colon < 0) return fallback;
         int start = colon + 1;
         while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
         int end = start;
-        while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-' || body.charAt(end) == '.')) end++;
-        if (end == start) return fallback;
-        try { return Double.parseDouble(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static String escape(String raw) {
-        if (raw == null) return "";
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
-            }
+        while (end < body.length()) {
+            char character = body.charAt(end);
+            if (!(Character.isDigit(character) || character == '-' || character == '+'
+                    || character == '.' || character == 'e' || character == 'E')) break;
+            end++;
         }
-        return out.toString();
+        try {
+            return Double.parseDouble(body.substring(start, end));
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
-    private static void json(HttpExchange ex, int status, String body) throws IOException {
-        bytes(ex, status, "application/json", body);
+    private static String format(double value) {
+        return String.format(java.util.Locale.ROOT, "%.9f", value);
     }
 
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+    private static String escape(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\")
+                .replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
-    private void log(String event, String fields) {
-        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+    private static void json(HttpExchange exchange, int status, String body)
+            throws IOException {
+        bytes(exchange, status, "application/json", body);
+    }
+
+    private static void bytes(HttpExchange exchange, int status, String type, String body)
+            throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(payload);
+        }
+    }
+
+    record Evaluation(String result, boolean cacheHit, long compileNanos, long executionNanos) { }
+
+    static final class SandboxedContextFactory extends ContextFactory {
+        @Override
+        protected Context makeContext() {
+            Context context = super.makeContext();
+            context.setOptimizationLevel(-1);
+            context.setInstructionObserverThreshold(INSTRUCTION_BUDGET);
+            context.setClassShutter(className -> false);
+            return context;
+        }
+
+        @Override
+        protected void observeInstructionCount(Context context, int instructionCount) {
+            throw new EvaluatorException("instruction budget exceeded");
+        }
     }
 }

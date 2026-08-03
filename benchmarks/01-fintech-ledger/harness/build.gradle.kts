@@ -4,11 +4,12 @@ plugins {
 }
 
 group = "com.palaashatri.bench"
-version = "0.1.0"
+version = "0.2.0"
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(21))
+    }
 }
 
 tasks.withType<JavaCompile>().configureEach {

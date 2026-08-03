@@ -1,0 +1,13 @@
+{
+  "schema_version":"1.0.0",
+  "id":"04-ml-inference-panama-vector",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":21,
+  "implementation":"JDK 21 preview Vector API matrix kernels plus FFM off-heap round trip",
+  "measurement_valid":false,
+  "invalid_reasons":["micro workload is served through HTTP","no shared open-loop measurement harness"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/inference","POST /api/v1/inference/scalar"]
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"09-onnx-inference",
+  "tier":"tier-0",
+  "lane":"feature",
+  "min_jdk":17,
+  "max_jdk":25,
+  "implementation":"deterministic pure-Java neural-network fallback",
+  "onnx_session_active":false,
+  "measurement_valid":false,
+  "invalid_reasons":["no bundled validated ONNX model session","fallback results must not be labeled ONNX"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/inference/classify","GET /api/v1/inference/health"]
+}

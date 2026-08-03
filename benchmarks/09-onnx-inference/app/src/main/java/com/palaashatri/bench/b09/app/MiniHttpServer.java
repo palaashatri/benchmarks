@@ -2,230 +2,178 @@ package com.palaashatri.bench.b09.app;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Deterministic Java inference fallback.
+ *
+ * This class deliberately does not claim ONNX execution. Merely finding ONNX
+ * Runtime classes on the classpath is not equivalent to loading and executing
+ * an ONNX model. A real ONNX implementation must create an OrtSession, validate
+ * a bundled model and expose numerical-equivalence tests before this workload
+ * can be promoted beyond Tier 0.
+ */
 public final class MiniHttpServer {
-
+    private static final String BENCHMARK = "09-onnx-inference";
     private static final String[] LABELS = {"setosa", "versicolor", "virginica"};
 
-    private final String benchmark = "09-onnx-inference";
-    private final AtomicLong totalRequests = new AtomicLong();
+    private final JavaFallbackInference inference = new JavaFallbackInference();
+    private final boolean onnxClassesDetected;
+    private final AtomicLong requests = new AtomicLong();
     private final AtomicLong inferenceRequests = new AtomicLong();
-    // stored in microseconds to avoid floating-point accumulation; displayed as ms
-    private final AtomicLong totalInferenceUs = new AtomicLong();
-    private final AtomicLong totalTokenizeUs = new AtomicLong();
-
-    private final JavaFallbackInference inference;
-    private final boolean onnxAvailable;
-    private final long modelLoadMs;
+    private final AtomicLong inferenceNanos = new AtomicLong();
 
     public MiniHttpServer() {
-        long t0 = System.nanoTime();
-        boolean onnx = false;
+        boolean detected;
         try {
             Class.forName("ai.onnxruntime.OrtEnvironment");
-            onnx = true;
-        } catch (ClassNotFoundException ignored) { }
-        onnxAvailable = onnx;
-        inference = new JavaFallbackInference();
-        modelLoadMs = (System.nanoTime() - t0) / 1_000_000L;
+            detected = true;
+        } catch (ClassNotFoundException ignored) {
+            detected = false;
+        }
+        onnxClassesDetected = detected;
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
-        server.createContext("/api/v1/inference/classify", this::handleClassify);
-        server.createContext("/api/v1/inference/health", this::handleInferenceHealth);
-        server.createContext("/health", this::handleHealth);
-        server.createContext("/metrics", this::handleMetrics);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
+        server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
+        server.createContext("/metrics", this::metrics);
+        server.createContext("/api/v1/inference/health", this::health);
+        server.createContext("/api/v1/inference/classify", this::classify);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.println("{\"event\":\"started\",\"benchmark\":\"" + benchmark
-                + "\",\"port\":" + port
-                + ",\"mode\":\"" + mode() + "\""
-                + ",\"model_load_ms\":" + modelLoadMs + "}");
+        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"mode\":\"java-fallback\",\"port\":%d,\"pid\":%d}%n",
+                BENCHMARK, port, ProcessHandle.current().pid());
     }
 
-    // -------------------------------------------------------------------------
-    // Handlers
-    // -------------------------------------------------------------------------
+    private void health(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        json(exchange, 200, "{\"status\":\"UP\",\"mode\":\"java-fallback\","
+                + "\"onnx_classes_detected\":" + onnxClassesDetected
+                + ",\"onnx_session_active\":false}");
+    }
 
-    private void handleClassify(HttpExchange ex) throws IOException {
-        totalRequests.incrementAndGet();
-        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-            json(ex, 405, "{\"error\":\"method not allowed\"}");
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid()
+                + ",\"run_token\":\"" + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", "")) + "\""
+                + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
+                + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\"}");
+    }
+
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE inference_requests_total counter\n"
+                + "inference_requests_total{mode=\"java-fallback\"} " + inferenceRequests.get() + "\n"
+                + "# TYPE inference_duration_seconds_sum counter\n"
+                + "inference_duration_seconds_sum{mode=\"java-fallback\"} "
+                + format(inferenceNanos.get() / 1_000_000_000.0) + "\n"
+                + "# TYPE onnx_session_active gauge\nonnx_session_active 0\n"
+                + "# TYPE benchmark_requests_total counter\nbenchmark_requests_total{benchmark=\""
+                + BENCHMARK + "\"} " + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
+    }
+
+    private void classify(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
             return;
         }
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-
-        float[] features;
-        long tokenizeUs = 0;
-
-        // Prefer "features" array; fall back to tokenising "text"
-        float[] parsed = parseFeatures(body);
-        if (parsed != null) {
-            features = parsed;
-        } else {
-            String text = field(body, "text");
-            if (text == null) text = "default input";
-            long ts = System.nanoTime();
-            features = tokenize(text);
-            tokenizeUs = (System.nanoTime() - ts) / 1_000L;
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        float[] features = parseFeatures(body);
+        if (features == null) {
+            features = tokenize(stringField(body, "text", "default input"));
         }
-
-        long t0 = System.nanoTime();
-        float[] probs = inference.infer(features);
-        long inferenceUs = (System.nanoTime() - t0) / 1_000L;
-
-        totalTokenizeUs.addAndGet(tokenizeUs);
-        totalInferenceUs.addAndGet(inferenceUs);
+        long started = System.nanoTime();
+        float[] probabilities = inference.infer(features);
+        long duration = System.nanoTime() - started;
         inferenceRequests.incrementAndGet();
-
-        int cls = argmax(probs);
-        float confidence = probs[cls];
-
-        String resp = "{\"class\":" + cls
-                + ",\"label\":\"" + LABELS[cls] + "\""
-                + ",\"confidence\":" + fmt3(confidence)
-                + ",\"inference_ms\":" + fmt3(inferenceUs / 1000.0)
-                + ",\"tokenize_ms\":" + fmt3(tokenizeUs / 1000.0)
-                + ",\"mode\":\"" + mode() + "\""
-                + ",\"model_load_ms\":" + modelLoadMs + "}";
-        json(ex, 200, resp);
+        inferenceNanos.addAndGet(duration);
+        int classification = argmax(probabilities);
+        json(exchange, 200, "{\"class\":" + classification
+                + ",\"label\":\"" + LABELS[classification] + "\""
+                + ",\"confidence\":" + format(probabilities[classification])
+                + ",\"inference_ms\":" + format(duration / 1_000_000.0)
+                + ",\"mode\":\"java-fallback\",\"onnx_session_active\":false}");
     }
-
-    private void handleInferenceHealth(HttpExchange ex) throws IOException {
-        totalRequests.incrementAndGet();
-        json(ex, 200, "{\"status\":\"UP\",\"mode\":\"" + mode() + "\",\"model_load_ms\":" + modelLoadMs + "}");
-    }
-
-    private void handleHealth(HttpExchange ex) throws IOException {
-        totalRequests.incrementAndGet();
-        json(ex, 200, "{\"status\":\"UP\",\"mode\":\"" + mode() + "\",\"model_load_ms\":" + modelLoadMs + "}");
-    }
-
-    private void handleMetrics(HttpExchange ex) throws IOException {
-        long reqs = inferenceRequests.get();
-        double inferenceMs = totalInferenceUs.get() / 1000.0;
-        double tokenizeMs = totalTokenizeUs.get() / 1000.0;
-        String body = "inference_requests_total " + reqs + "\n"
-                + "inference_ms_total " + fmt3(inferenceMs) + "\n"
-                + "tokenize_ms_total " + fmt3(tokenizeMs) + "\n"
-                + "model_load_ms " + modelLoadMs + "\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + totalRequests.get() + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
-    }
-
-    // -------------------------------------------------------------------------
-    // Inference engine
-    // -------------------------------------------------------------------------
 
     static final class JavaFallbackInference {
-        private final float[][] w1 = new float[64][4];
-        private final float[] b1 = new float[64];
-        private final float[][] w2 = new float[3][64];
-        private final float[] b2 = new float[3];
+        private final float[][] first = new float[64][4];
+        private final float[][] second = new float[3][64];
 
         JavaFallbackInference() {
-            java.util.Random rng = new java.util.Random(42);
-            for (float[] row : w1) for (int j = 0; j < row.length; j++) row[j] = (float)(rng.nextGaussian() * 0.3);
-            for (int i = 0; i < b1.length; i++) b1[i] = (float)(rng.nextGaussian() * 0.1);
-            for (float[] row : w2) for (int j = 0; j < row.length; j++) row[j] = (float)(rng.nextGaussian() * 0.3);
-            for (int i = 0; i < b2.length; i++) b2[i] = (float)(rng.nextGaussian() * 0.1);
+            Random random = new Random(42);
+            for (float[] row : first) for (int i = 0; i < row.length; i++) row[i] = (float) (random.nextGaussian() * .3);
+            for (float[] row : second) for (int i = 0; i < row.length; i++) row[i] = (float) (random.nextGaussian() * .3);
         }
 
-        float[] infer(float[] x) {
-            float[] h = new float[64];
-            for (int i = 0; i < 64; i++) {
-                float s = b1[i];
-                for (int j = 0; j < 4; j++) s += w1[i][j] * x[j];
-                h[i] = Math.max(0, s);
+        float[] infer(float[] input) {
+            float[] hidden = new float[64];
+            for (int row = 0; row < hidden.length; row++) {
+                float value = 0;
+                for (int column = 0; column < 4; column++) value += first[row][column] * input[column];
+                hidden[row] = Math.max(0, value);
             }
-            float[] out = new float[3];
-            for (int i = 0; i < 3; i++) {
-                out[i] = b2[i];
-                for (int j = 0; j < 64; j++) out[i] += w2[i][j] * h[j];
+            float[] output = new float[3];
+            for (int row = 0; row < output.length; row++) {
+                for (int column = 0; column < hidden.length; column++) output[row] += second[row][column] * hidden[column];
             }
-            return softmax(out);
-        }
-
-        private float[] softmax(float[] x) {
-            float max = x[0]; for (float v : x) if (v > max) max = v;
-            float sum = 0; float[] e = new float[x.length];
-            for (int i = 0; i < x.length; i++) { e[i] = (float) Math.exp(x[i] - max); sum += e[i]; }
-            for (int i = 0; i < x.length; i++) e[i] /= sum;
-            return e;
+            float max = Math.max(output[0], Math.max(output[1], output[2]));
+            float sum = 0;
+            for (int i = 0; i < output.length; i++) { output[i] = (float) Math.exp(output[i] - max); sum += output[i]; }
+            for (int i = 0; i < output.length; i++) output[i] /= sum;
+            return output;
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private float[] tokenize(String text) {
-        float[] features = new float[4];
-        long hash = 1125899906842597L;
-        for (int i = 0; i < text.length(); i++) hash = 31L * hash + text.charAt(i);
-        features[0] = ((hash & 0xFF) / 255.0f);
-        features[1] = (((hash >> 8) & 0xFF) / 255.0f);
-        features[2] = (((hash >> 16) & 0xFF) / 255.0f);
-        features[3] = (((hash >> 24) & 0xFF) / 255.0f);
-        return features;
-    }
-
-    private float[] parseFeatures(String body) {
-        int start = body.indexOf('[');
-        int end = body.indexOf(']', start);
+    private static float[] parseFeatures(String body) {
+        int start = body.indexOf('['), end = body.indexOf(']', start);
         if (start < 0 || end < 0) return null;
-        String[] parts = body.substring(start + 1, end).split(",");
-        if (parts.length < 4) return null;
-        float[] f = new float[4];
+        String[] values = body.substring(start + 1, end).split(",");
+        if (values.length != 4) return null;
+        float[] result = new float[4];
         try {
-            for (int i = 0; i < 4; i++) f[i] = Float.parseFloat(parts[i].trim());
-        } catch (NumberFormatException e) {
+            for (int i = 0; i < result.length; i++) result[i] = Float.parseFloat(values[i].trim());
+            return result;
+        } catch (NumberFormatException ignored) {
             return null;
         }
-        return f;
     }
 
-    /** Extract the first string value for the given JSON key (unescaped, simple). */
-    private static String field(String body, String name) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted);
-        if (key < 0) return null;
-        int colon = body.indexOf(':', key + quoted.length());
-        if (colon < 0) return null;
-        int firstQuote = body.indexOf('"', colon + 1);
-        if (firstQuote < 0) return null;
-        int secondQuote = body.indexOf('"', firstQuote + 1);
-        if (secondQuote < 0) return null;
-        return body.substring(firstQuote + 1, secondQuote);
+    private static float[] tokenize(String text) {
+        long hash = 1125899906842597L;
+        for (int i = 0; i < text.length(); i++) hash = 31 * hash + text.charAt(i);
+        return new float[]{(hash & 255) / 255f, ((hash >>> 8) & 255) / 255f,
+                ((hash >>> 16) & 255) / 255f, ((hash >>> 24) & 255) / 255f};
     }
 
-    private static int argmax(float[] arr) {
-        int idx = 0;
-        for (int i = 1; i < arr.length; i++) if (arr[i] > arr[idx]) idx = i;
-        return idx;
+    private static String stringField(String body, String name, String fallback) {
+        String key = "\"" + name + "\"";
+        int keyAt = body.indexOf(key), colon = body.indexOf(':', keyAt + key.length());
+        int start = body.indexOf('"', colon + 1), end = start < 0 ? -1 : body.indexOf('"', start + 1);
+        return keyAt < 0 || colon < 0 || start < 0 || end < 0 ? fallback : body.substring(start + 1, end);
     }
 
-    private String mode() { return onnxAvailable ? "onnx" : "java-fallback"; }
-
-    private static String fmt3(double v) {
-        return String.format(java.util.Locale.ROOT, "%.3f", v);
+    private static int argmax(float[] values) {
+        int best = 0;
+        for (int i = 1; i < values.length; i++) if (values[i] > values[best]) best = i;
+        return best;
     }
 
-    private static void json(HttpExchange ex, int status, String body) throws IOException {
-        bytes(ex, status, "application/json", body);
-    }
-
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+    private static String format(double value) { return String.format(java.util.Locale.ROOT, "%.6f", value); }
+    private static String escape(String value) { return value.replace("\\", "\\\\").replace("\"", "\\\""); }
+    private static void json(HttpExchange exchange, int status, String body) throws IOException { bytes(exchange, status, "application/json", body); }
+    private static void bytes(HttpExchange exchange, int status, String contentType, String body) throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) { output.write(payload); }
     }
 }

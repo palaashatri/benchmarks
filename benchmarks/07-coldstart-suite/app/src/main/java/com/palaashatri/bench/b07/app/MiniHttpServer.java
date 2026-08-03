@@ -3,290 +3,153 @@ package com.palaashatri.bench.b07.app;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.management.ManagementFactory;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
+/** OpenJDK process-start prototype. CDS/AppCDS matrix remains Tier-2 work. */
 public final class MiniHttpServer {
-
-    // When the JVM started (epoch ms)
-    private final long jvmStartMs = ManagementFactory.getRuntimeMXBean().getStartTime();
-
-    // When this server was initialized (nanoTime)
-    private final long startedAtNano = System.nanoTime();
-
-    // NanoTime of the very first request (-1 until first request arrives)
-    private final AtomicLong firstRequestNano = new AtomicLong(-1L);
-
-    // Total request counter
-    private final AtomicLong requests = new AtomicLong();
-
-    // Per-second throughput circular buffer (60 slots)
-    private final AtomicLong[] perSecondCounts = new AtomicLong[60];
-    private final long[] secondTimestamps = new long[60];
-
     private final String benchmark;
+    private final long constructedAt = System.nanoTime();
+    private final long jvmStartMs = ManagementFactory.getRuntimeMXBean().getStartTime();
+    private final AtomicLong requests = new AtomicLong();
+    private final AtomicLong childStarts = new AtomicLong();
+    private final AtomicLong childStartDurationNs = new AtomicLong();
 
-    // Fixed child port for coldstart measurement
-    private static final int CHILD_PORT = 18070;
-
-    public MiniHttpServer(String benchmark) {
-        this.benchmark = benchmark;
-        for (int i = 0; i < 60; i++) {
-            perSecondCounts[i] = new AtomicLong(0);
-            secondTimestamps[i] = 0L;
-        }
-    }
+    public MiniHttpServer(String benchmark) { this.benchmark = benchmark; }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
-        server.createContext("/health", this::handleHealth);
-        server.createContext("/actuator/health", this::handleHealth);
-        server.createContext("/metrics", this::handleMetrics);
-        server.createContext("/actuator/prometheus", this::handleMetrics);
-        server.createContext("/api/v1/coldstart/measure", this::handleColdstartMeasure);
-        server.createContext("/api/v1/jfr/stats", this::handleJfrStats);
-        server.createContext("/api/v1/warmup", this::handleWarmup);
-        server.createContext("/", this::handleCatchAll);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
+        server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
+        server.createContext("/metrics", this::metrics);
+        server.createContext("/api/v1/coldstart/measure", this::measure);
+        server.createContext("/api/v1/jfr/stats", this::stats);
+        server.createContext("/api/v1/warmup", this::stats);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        log("started", "\"port\":" + port);
+        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"port\":%d,\"pid\":%d}%n",
+                benchmark, port, ProcessHandle.current().pid());
     }
 
-    // -------------------------------------------------------------------------
-    // Request recording
-    // -------------------------------------------------------------------------
-
-    private void recordFirstRequest() {
-        firstRequestNano.compareAndSet(-1L, System.nanoTime());
-    }
-
-    private void recordRequest() {
+    private void health(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        long currentSecond = System.currentTimeMillis() / 1000L;
-        int idx = (int) (currentSecond % 60);
-        // If the slot belongs to a different second, reset it
-        if (secondTimestamps[idx] != currentSecond) {
-            synchronized (perSecondCounts[idx]) {
-                if (secondTimestamps[idx] != currentSecond) {
-                    perSecondCounts[idx].set(0L);
-                    secondTimestamps[idx] = currentSecond;
-                }
-            }
+        json(exchange, 200, "{\"status\":\"UP\",\"process_uptime_ms\":"
+                + ManagementFactory.getRuntimeMXBean().getUptime() + "}");
+    }
+
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid()
+                + ",\"run_token\":\"" + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", "")) + "\""
+                + ",\"java_executable\":\"" + escape(javaExecutable().toString()) + "\""
+                + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\"}");
+    }
+
+    private void stats(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        var compilation = ManagementFactory.getCompilationMXBean();
+        long compilationMs = compilation == null || !compilation.isCompilationTimeMonitoringSupported()
+                ? -1 : compilation.getTotalCompilationTime();
+        json(exchange, 200, "{\"jvm_start_epoch_ms\":" + jvmStartMs
+                + ",\"jvm_uptime_ms\":" + ManagementFactory.getRuntimeMXBean().getUptime()
+                + ",\"server_uptime_ms\":" + ((System.nanoTime() - constructedAt) / 1_000_000L)
+                + ",\"jit_compilation_ms\":" + compilationMs
+                + ",\"loaded_classes\":" + ManagementFactory.getClassLoadingMXBean().getLoadedClassCount()
+                + ",\"cds_mode\":\"not-controlled-by-app\"}");
+    }
+
+    private void measure(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
         }
-        perSecondCounts[idx].incrementAndGet();
-    }
-
-    // -------------------------------------------------------------------------
-    // Handlers
-    // -------------------------------------------------------------------------
-
-    private void handleHealth(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        long uptimeMs = (System.nanoTime() - startedAtNano) / 1_000_000L;
-        long firstNano = firstRequestNano.get();
-        long startupMs = firstNano == -1L ? -1L : (firstNano - startedAtNano) / 1_000_000L;
-        long compiledMs = compilationMs();
-        long jvmUptimeMs = System.currentTimeMillis() - jvmStartMs;
-        String body = "{\"status\":\"UP\",\"uptime_ms\":" + uptimeMs
-                + ",\"startup_ms\":" + startupMs
-                + ",\"compiled_ms\":" + compiledMs
-                + ",\"jvm_start_ms\":" + jvmUptimeMs + "}";
-        json(ex, 200, body);
-    }
-
-    private void handleMetrics(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        long startupMs = startupMsValue();
-        long compiledMs = compilationMs();
-        long loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
-        int processors = Runtime.getRuntime().availableProcessors();
-        long totalRequests = requests.get();
-        String body = "# TYPE jvm_startup_ms gauge\n"
-                + "jvm_startup_ms " + startupMs + "\n"
-                + "# TYPE jvm_compilation_ms_total counter\n"
-                + "jvm_compilation_ms_total " + compiledMs + "\n"
-                + "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + totalRequests + "\n"
-                + "# TYPE jvm_loaded_classes gauge\n"
-                + "jvm_loaded_classes " + loadedClasses + "\n"
-                + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + processors + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
-    }
-
-    private void handleJfrStats(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        long compiledMs = compilationMs();
-        long loadedClasses = ManagementFactory.getClassLoadingMXBean().getLoadedClassCount();
-        long uptimeMs = (System.nanoTime() - startedAtNano) / 1_000_000L;
-        long jvmUptimeMs = System.currentTimeMillis() - jvmStartMs;
-        String body = "{\"total_compilation_ms\":" + compiledMs
-                + ",\"loaded_classes\":" + loadedClasses
-                + ",\"uptime_ms\":" + uptimeMs
-                + ",\"jvm_start_ms\":" + jvmUptimeMs + "}";
-        json(ex, 200, body);
-    }
-
-    private void handleColdstartMeasure(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        // Drain the request body (good practice)
-        try (InputStream in = ex.getRequestBody()) { in.readAllBytes(); }
-
-        Process childProcess = null;
-        long ttfr = -1L;
-        String errorMsg = null;
+        int childPort = freePort();
+        String token = "child-" + Long.toUnsignedString(System.nanoTime());
+        ProcessBuilder builder = new ProcessBuilder(javaExecutable().toString(), "-cp",
+                System.getProperty("java.class.path"), BenchmarkApp.class.getName(), Integer.toString(childPort));
+        builder.environment().put("BENCH_RUN_TOKEN", token);
+        builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+        builder.redirectError(ProcessBuilder.Redirect.DISCARD);
+        long started = System.nanoTime();
+        Process child = builder.start();
+        String error = null;
+        long readyNs = -1;
         try {
-            long t0 = System.nanoTime();
-            String cp = System.getProperty("java.class.path");
-            childProcess = new ProcessBuilder(
-                    "java", "-cp", cp,
-                    "com.palaashatri.bench.b07.app.BenchmarkApp",
-                    String.valueOf(CHILD_PORT))
-                    .redirectErrorStream(true)
-                    .start();
-
-            // Poll child /health until 200, max 10s (100 attempts x 100ms)
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofMillis(500))
-                    .build();
-            boolean responded = false;
-            for (int attempt = 0; attempt < 100; attempt++) {
-                try {
-                    Thread.sleep(100);
-                    HttpRequest req = HttpRequest.newBuilder(
-                            URI.create("http://localhost:" + CHILD_PORT + "/health"))
-                            .timeout(Duration.ofMillis(400))
-                            .GET().build();
-                    HttpResponse<Void> res = client.send(req, HttpResponse.BodyHandlers.discarding());
-                    if (res.statusCode() == 200) {
-                        ttfr = (System.nanoTime() - t0) / 1_000_000L;
-                        responded = true;
-                        break;
-                    }
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception ignored) {
-                    // child not ready yet
-                }
-            }
-            if (!responded) {
-                errorMsg = "timeout";
-            }
-        } catch (Exception e) {
-            errorMsg = escape(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            waitForChild(childPort, child, token, Duration.ofSeconds(15));
+            readyNs = System.nanoTime() - started;
+            childStarts.incrementAndGet();
+            childStartDurationNs.addAndGet(readyNs);
+        } catch (Exception exception) {
+            error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
         } finally {
-            if (childProcess != null) {
-                childProcess.destroyForcibly();
+            child.destroy();
+            try {
+                if (!child.waitFor(2, java.util.concurrent.TimeUnit.SECONDS)) child.destroyForcibly();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                child.destroyForcibly();
             }
         }
-
-        String body;
-        if (errorMsg != null) {
-            body = "{\"time_to_first_response_ms\":-1,\"error\":\"" + errorMsg + "\"}";
+        if (error != null) {
+            json(exchange, 500, "{\"error\":\"child_start_failed\",\"message\":\"" + escape(error) + "\"}");
         } else {
-            body = "{\"time_to_first_response_ms\":" + ttfr + "}";
-        }
-        json(ex, 200, body);
-    }
-
-    private void handleWarmup(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        long nowSecond = System.currentTimeMillis() / 1000L;
-        StringBuilder sb = new StringBuilder("{\"samples\":[");
-        boolean first = true;
-        for (int offset = 59; offset >= 0; offset--) {
-            long second = nowSecond - offset;
-            int idx = (int) (second % 60);
-            if (secondTimestamps[idx] == second) {
-                long rps = perSecondCounts[idx].get();
-                if (rps > 0) {
-                    if (!first) sb.append(',');
-                    sb.append("{\"second\":").append(second).append(",\"rps\":").append(rps).append('}');
-                    first = false;
-                }
-            }
-        }
-        sb.append("]}");
-        json(ex, 200, sb.toString());
-    }
-
-    private void handleCatchAll(HttpExchange ex) throws IOException {
-        recordFirstRequest();
-        recordRequest();
-        // Drain body
-        try (InputStream in = ex.getRequestBody()) { in.readAllBytes(); }
-        String path = ex.getRequestURI().getPath();
-        json(ex, 404, "{\"error\":\"no route for " + escape(path) + "\",\"benchmark\":\"" + benchmark + "\"}");
-    }
-
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private long startupMsValue() {
-        long firstNano = firstRequestNano.get();
-        return firstNano == -1L ? -1L : (firstNano - startedAtNano) / 1_000_000L;
-    }
-
-    private long compilationMs() {
-        var compMX = ManagementFactory.getCompilationMXBean();
-        if (compMX == null) return 0L;
-        return compMX.getTotalCompilationTime();
-    }
-
-    private static void json(HttpExchange ex, int status, String body) throws IOException {
-        bytes(ex, status, "application/json", body);
-    }
-
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) {
-            out.write(data);
+            json(exchange, 200, "{\"time_to_health_ms\":" + (readyNs / 1_000_000.0)
+                    + ",\"child_java\":\"" + escape(javaExecutable().toString()) + "\""
+                    + ",\"measurement_kind\":\"process_to_health\"}");
         }
     }
 
-    private static String escape(String raw) {
-        if (raw == null) return "";
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
-            }
-        }
-        return out.toString();
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE coldstart_child_starts_total counter\ncoldstart_child_starts_total " + childStarts.get() + "\n"
+                + "# TYPE coldstart_child_start_duration_seconds_sum counter\ncoldstart_child_start_duration_seconds_sum "
+                + format(childStartDurationNs.get() / 1_000_000_000.0) + "\n"
+                + "# TYPE benchmark_requests_total counter\nbenchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
     }
 
-    private void log(String event, String fields) {
-        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+    private static void waitForChild(int port, Process child, String token, Duration timeout) throws Exception {
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofMillis(300)).build();
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (System.nanoTime() < deadline) {
+            if (!child.isAlive()) throw new IllegalStateException("child exited with code " + child.exitValue());
+            try {
+                HttpRequest request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/runtime"))
+                        .timeout(Duration.ofMillis(400)).GET().build();
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() == 200 && response.body().contains("\"run_token\":\"" + token + "\"")) return;
+            } catch (Exception ignored) { }
+            Thread.sleep(20);
+        }
+        throw new IllegalStateException("child readiness timeout");
+    }
+
+    private static int freePort() throws IOException {
+        try (ServerSocket socket = new ServerSocket()) {
+            socket.bind(new InetSocketAddress("127.0.0.1", 0));
+            return socket.getLocalPort();
+        }
+    }
+    private static Path javaExecutable() {
+        return Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
+    }
+    private static String format(double value) { return String.format(java.util.Locale.ROOT, "%.6f", value); }
+    private static String escape(String value) { return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\""); }
+    private static void json(HttpExchange exchange, int status, String body) throws IOException { bytes(exchange, status, "application/json", body); }
+    private static void bytes(HttpExchange exchange, int status, String type, String body) throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) { output.write(payload); }
     }
 }

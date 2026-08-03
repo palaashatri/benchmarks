@@ -9,234 +9,250 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
+/**
+ * Single-JVM fleet-state simulator.
+ *
+ * Five logical service states are hosted by one process. A replacement creates
+ * a new immutable service generation; it does not restart an external JVM.
+ */
 public final class MiniHttpServer {
-    private final String benchmark;
-    private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final AtomicLong deployCount = new AtomicLong();
-    private final ServiceState[] services = new ServiceState[5];
-    // per-service last restart times (epoch ms)
-    private final long[] lastRestartMs = new long[5];
-
     static final class ServiceState {
         final int id;
+        final long generation;
+        final long startedAtMs;
         final AtomicLong requests = new AtomicLong();
         final ConcurrentHashMap<String, String> inventory = new ConcurrentHashMap<>();
-        final long startTime = System.currentTimeMillis();
 
-        ServiceState(int id) {
+        ServiceState(int id, long generation) {
             this.id = id;
-            for (int i = 0; i < 100; i++) {
-                inventory.put("item-" + i, "value-" + i + "-svc" + id);
+            this.generation = generation;
+            this.startedAtMs = System.currentTimeMillis();
+            for (int item = 0; item < 100; item++) {
+                inventory.put(
+                        "item-" + item,
+                        "value-" + item + "-service-" + id + "-generation-" + generation);
             }
         }
     }
 
-    public MiniHttpServer(String benchmark, String title) {
+    private final String benchmark;
+    private final AtomicReferenceArray<ServiceState> services = new AtomicReferenceArray<>(5);
+    private final AtomicLong requests = new AtomicLong();
+    private final AtomicLong replacements = new AtomicLong();
+    private final AtomicLong orderIds = new AtomicLong(1);
+    private final ConcurrentHashMap<String, String> orders = new ConcurrentHashMap<>();
+
+    public MiniHttpServer(String benchmark, String ignoredTitle) {
         this.benchmark = benchmark;
-        long now = System.currentTimeMillis();
-        for (int i = 0; i < 5; i++) {
-            services[i] = new ServiceState(i);
-            lastRestartMs[i] = now;
+        for (int index = 0; index < services.length(); index++) {
+            services.set(index, new ServiceState(index, 1));
         }
+        orders.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
+        server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
+        server.createContext("/metrics", this::metrics);
         server.createContext("/api/v1/fleet/status", this::fleetStatus);
-        server.createContext("/api/v1/fleet/deploy/", this::fleetDeploy);
-        server.createContext("/api/v1/service/", this::serviceInventory);
+        server.createContext("/api/v1/fleet/deploy/", this::replaceService);
+        server.createContext("/api/v1/service/", this::inventory);
         server.createContext("/api/v1/catalog/", this::catalog);
         server.createContext("/api/v1/orders", this::orders);
-        server.createContext("/health", this::health);
-        server.createContext("/metrics", this::metrics);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.println("{\"event\":\"started\",\"benchmark\":\"" + benchmark + "\",\"port\":" + port + "}");
+        System.out.printf(
+                "{\"event\":\"started\",\"benchmark\":\"%s\","
+                        + "\"process_model\":\"single-jvm-simulation\","
+                        + "\"port\":%d,\"pid\":%d}%n",
+                benchmark,
+                port,
+                ProcessHandle.current().pid());
     }
 
-    // GET /api/v1/fleet/status
-    private void fleetStatus(HttpExchange ex) throws IOException {
+    private void health(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"status\":\"UP\",\"logical_services\":5,"
+                        + "\"external_processes\":0,"
+                        + "\"process_model\":\"single-jvm-simulation\"}");
+    }
+
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"pid\":" + ProcessHandle.current().pid()
+                        + ",\"run_token\":\""
+                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
+                        + "\",\"java_version\":\""
+                        + escape(System.getProperty("java.version")) + "\"}");
+    }
+
+    private void fleetStatus(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        StringBuilder sb = new StringBuilder("{\"services\":[");
-        for (int i = 0; i < 5; i++) {
-            ServiceState s = services[i];
-            long uptimeMs = System.currentTimeMillis() - s.startTime;
-            if (i > 0) sb.append(',');
-            sb.append("{\"id\":").append(i)
-              .append(",\"status\":\"UP\"")
-              .append(",\"requests\":").append(s.requests.get())
-              .append(",\"uptime_ms\":").append(uptimeMs)
-              .append('}');
+        StringBuilder body = new StringBuilder(
+                "{\"process_model\":\"single-jvm-simulation\","
+                        + "\"external_processes\":0,\"services\":[");
+        for (int index = 0; index < services.length(); index++) {
+            ServiceState service = services.get(index);
+            if (index > 0) body.append(',');
+            body.append("{\"id\":").append(service.id)
+                    .append(",\"generation\":").append(service.generation)
+                    .append(",\"status\":\"UP\"")
+                    .append(",\"requests\":").append(service.requests.get())
+                    .append(",\"uptime_ms\":")
+                    .append(System.currentTimeMillis() - service.startedAtMs)
+                    .append('}');
         }
-        sb.append("]}");
-        json(ex, 200, sb.toString());
+        body.append("]}");
+        json(exchange, 200, body.toString());
     }
 
-    // POST /api/v1/fleet/deploy/{serviceId}
-    private void fleetDeploy(HttpExchange ex) throws IOException {
+    private void replaceService(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        String path = ex.getRequestURI().getPath();
-        // consume body (required to avoid broken pipe on some JDK versions)
-        ex.getRequestBody().readAllBytes();
-        String suffix = path.substring("/api/v1/fleet/deploy/".length());
-        int serviceId;
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
+        }
+        exchange.getRequestBody().readAllBytes();
+        String suffix = exchange.getRequestURI().getPath()
+                .substring("/api/v1/fleet/deploy/".length());
+        int id;
         try {
-            serviceId = Integer.parseInt(suffix.replaceAll("[^0-9]", ""));
-        } catch (NumberFormatException e) {
-            json(ex, 400, "{\"error\":\"invalid service id\"}");
+            id = Integer.parseInt(suffix);
+        } catch (NumberFormatException invalid) {
+            json(exchange, 400, "{\"error\":\"invalid_service_id\"}");
             return;
         }
-        if (serviceId < 0 || serviceId >= 5) {
-            json(ex, 404, "{\"error\":\"service id out of range\"}");
+        if (id < 0 || id >= services.length()) {
+            json(exchange, 404, "{\"error\":\"service_not_found\"}");
             return;
         }
-        long t0 = System.nanoTime();
-        services[serviceId] = new ServiceState(serviceId);
-        long deployTimeMs = Math.max(1L, (System.nanoTime() - t0) / 1_000_000L);
-        lastRestartMs[serviceId] = System.currentTimeMillis();
-        deployCount.incrementAndGet();
-        json(ex, 200, "{\"service_id\":" + serviceId
-                + ",\"deployed\":true"
-                + ",\"deploy_time_ms\":" + deployTimeMs
-                + ",\"downtime_ms\":" + deployTimeMs + "}");
-    }
-
-    // GET /api/v1/service/{id}/inventory/{itemId}
-    private void serviceInventory(HttpExchange ex) throws IOException {
-        requests.incrementAndGet();
-        String path = ex.getRequestURI().getPath();
-        // path format: /api/v1/service/{id}/inventory/{itemId}
-        String rest = path.substring("/api/v1/service/".length());
-        // rest = "{id}/inventory/{itemId}"
-        int slashAfterSvcId = rest.indexOf('/');
-        if (slashAfterSvcId < 0) {
-            json(ex, 400, "{\"error\":\"bad path\"}");
-            return;
-        }
-        String svcIdStr = rest.substring(0, slashAfterSvcId);
-        String remaining = rest.substring(slashAfterSvcId + 1); // "inventory/{itemId}"
-        int inventorySlash = remaining.indexOf('/');
-        if (inventorySlash < 0 || !remaining.startsWith("inventory/")) {
-            json(ex, 400, "{\"error\":\"bad path\"}");
-            return;
-        }
-        String itemId = remaining.substring("inventory/".length());
-        int serviceId;
-        try {
-            serviceId = Integer.parseInt(svcIdStr);
-        } catch (NumberFormatException e) {
-            json(ex, 400, "{\"error\":\"invalid service id\"}");
-            return;
-        }
-        if (serviceId < 0 || serviceId >= 5) {
-            json(ex, 404, "{\"error\":\"service not found\"}");
-            return;
-        }
-        ServiceState s = services[serviceId];
-        s.requests.incrementAndGet();
-        String value = s.inventory.get(itemId);
-        if (value == null) {
-            json(ex, 404, "{\"error\":\"item not found\",\"service_id\":" + serviceId
-                    + ",\"item_id\":\"" + escape(itemId) + "\"}");
-            return;
-        }
-        json(ex, 200, "{\"service_id\":" + serviceId
-                + ",\"item_id\":\"" + escape(itemId) + "\""
-                + ",\"value\":\"" + escape(value) + "\""
-                + ",\"requests\":" + s.requests.get() + "}");
-    }
-
-    // GET /api/v1/catalog/{productId}  (backward compat)
-    private void catalog(HttpExchange ex) throws IOException {
-        requests.incrementAndGet();
-        String path = ex.getRequestURI().getPath();
-        String product = path.substring("/api/v1/catalog/".length());
-        long stock = 10 + Math.floorMod(product.hashCode(), 500);
-        long price = 999 + Math.floorMod(product.hashCode(), 20_000);
-        json(ex, 200, "{\"productId\":\"" + escape(product)
-                + "\",\"available\":" + stock
-                + ",\"priceCents\":" + price
-                + ",\"pricingRules\":8}");
-    }
-
-    // POST /api/v1/orders  and  GET /api/v1/orders/{id}  (backward compat)
-    // Both /api/v1/orders and /api/v1/orders/ are routed here by the context "/api/v1/orders"
-    private final ConcurrentHashMap<String, String> orderDocs = new ConcurrentHashMap<>();
-    {
-        orderDocs.put("order-1", "{\"orderId\":\"order-1\",\"status\":\"SEEDED\"}");
-    }
-
-    private void orders(HttpExchange ex) throws IOException {
-        requests.incrementAndGet();
-        String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-        if ("POST".equals(method) && path.equals("/api/v1/orders")) {
-            ex.getRequestBody().readAllBytes(); // consume body
-            String id = "order-" + ids.getAndIncrement();
-            String doc = "{\"orderId\":\"" + id + "\",\"status\":\"ACCEPTED\",\"auditPublished\":true}";
-            orderDocs.put(id, doc);
-            json(ex, 200, doc);
-        } else if ("GET".equals(method) && path.startsWith("/api/v1/orders/")) {
-            String id = path.substring("/api/v1/orders/".length());
-            String doc = orderDocs.getOrDefault(id,
-                    "{\"orderId\":\"" + escape(id) + "\",\"status\":\"UNKNOWN\"}");
-            json(ex, 200, doc);
-        } else {
-            ex.getRequestBody().readAllBytes();
-            json(ex, 404, "{\"error\":\"no route\",\"path\":\"" + escape(path) + "\"}");
-        }
-    }
-
-    // GET /health
-    private void health(HttpExchange ex) throws IOException {
-        json(ex, 200, "{\"status\":\"UP\",\"services_running\":5,\"benchmark\":\"" + benchmark + "\"}");
-    }
-
-    // GET /metrics
-    private void metrics(HttpExchange ex) throws IOException {
-        long totalReqs = requests.get();
-        long deploys = deployCount.get();
-        String body = "fleet_requests_total " + totalReqs + "\n"
-                + "fleet_deploy_count " + deploys + "\n"
-                + "fleet_services_up 5\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + totalReqs + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
-    }
-
-    private static String escape(String raw) {
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
+        long started = System.nanoTime();
+        while (true) {
+            ServiceState previous = services.get(id);
+            ServiceState replacement = new ServiceState(id, previous.generation + 1);
+            if (services.compareAndSet(id, previous, replacement)) {
+                replacements.incrementAndGet();
+                json(exchange, 200,
+                        "{\"service_id\":" + id
+                                + ",\"previous_generation\":" + previous.generation
+                                + ",\"new_generation\":" + replacement.generation
+                                + ",\"replacement_build_ms\":"
+                                + format((System.nanoTime() - started) / 1_000_000.0)
+                                + ",\"external_process_restarted\":false,"
+                                + "\"simulated_downtime_ms\":0}");
+                return;
             }
         }
-        return out.toString();
     }
 
-    private static void json(HttpExchange ex, int status, String body) throws IOException {
-        bytes(ex, status, "application/json", body);
+    private void inventory(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        String rest = exchange.getRequestURI().getPath()
+                .substring("/api/v1/service/".length());
+        String[] pieces = rest.split("/", 3);
+        if (pieces.length != 3 || !"inventory".equals(pieces[1])) {
+            json(exchange, 400, "{\"error\":\"bad_path\"}");
+            return;
+        }
+        int id;
+        try {
+            id = Integer.parseInt(pieces[0]);
+        } catch (NumberFormatException invalid) {
+            json(exchange, 400, "{\"error\":\"invalid_service_id\"}");
+            return;
+        }
+        if (id < 0 || id >= services.length()) {
+            json(exchange, 404, "{\"error\":\"service_not_found\"}");
+            return;
+        }
+        ServiceState service = services.get(id);
+        service.requests.incrementAndGet();
+        String value = service.inventory.get(pieces[2]);
+        if (value == null) {
+            json(exchange, 404, "{\"error\":\"item_not_found\"}");
+            return;
+        }
+        json(exchange, 200,
+                "{\"service_id\":" + id
+                        + ",\"generation\":" + service.generation
+                        + ",\"item_id\":\"" + escape(pieces[2])
+                        + "\",\"value\":\"" + escape(value) + "\"}");
     }
 
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) {
-            out.write(data);
+    private void catalog(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        String product = exchange.getRequestURI().getPath()
+                .substring("/api/v1/catalog/".length());
+        long stock = 10 + Math.floorMod(product.hashCode(), 500);
+        long price = 999 + Math.floorMod(product.hashCode(), 20_000);
+        json(exchange, 200,
+                "{\"productId\":\"" + escape(product)
+                        + "\",\"available\":" + stock
+                        + ",\"priceCents\":" + price + "}");
+    }
+
+    private void orders(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        String method = exchange.getRequestMethod();
+        String path = exchange.getRequestURI().getPath();
+        if ("POST".equalsIgnoreCase(method) && "/api/v1/orders".equals(path)) {
+            exchange.getRequestBody().readAllBytes();
+            String id = "order-" + orderIds.getAndIncrement();
+            String document = "{\"orderId\":\"" + id
+                    + "\",\"status\":\"ACCEPTED\"}";
+            orders.put(id, document);
+            json(exchange, 200, document);
+            return;
+        }
+        if ("GET".equalsIgnoreCase(method) && path.startsWith("/api/v1/orders/")) {
+            String id = path.substring("/api/v1/orders/".length());
+            json(exchange, 200, orders.getOrDefault(
+                    id,
+                    "{\"orderId\":\"" + escape(id) + "\",\"status\":\"UNKNOWN\"}"));
+            return;
+        }
+        json(exchange, 404, "{\"error\":\"not_found\"}");
+    }
+
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE fleet_logical_services gauge\n"
+                + "fleet_logical_services 5\n"
+                + "# TYPE fleet_external_processes gauge\n"
+                + "fleet_external_processes 0\n"
+                + "# TYPE fleet_state_replacements_total counter\n"
+                + "fleet_state_replacements_total " + replacements.get() + "\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} "
+                + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
+    }
+
+    private static String format(double value) {
+        return String.format(java.util.Locale.ROOT, "%.6f", value);
+    }
+
+    private static String escape(String value) {
+        return value == null
+                ? ""
+                : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static void json(HttpExchange exchange, int status, String body)
+            throws IOException {
+        bytes(exchange, status, "application/json", body);
+    }
+
+    private static void bytes(
+            HttpExchange exchange, int status, String type, String body)
+            throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(payload);
         }
     }
 }
