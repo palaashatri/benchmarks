@@ -1,0 +1,7 @@
+{"event":"run_start","run":1,"of":3}
+{"event":"run_done","run":1,"throughput":665.577}
+{"event":"run_start","run":2,"of":3}
+{"event":"run_done","run":2,"throughput":3111.478}
+{"event":"run_start","run":3,"of":3}
+{"event":"run_done","run":3,"throughput":4666.038}
+{"benchmark":"03-streaming-analytics","runtime":"openjdk-hotspot-21","gc":"G1","jvm_flags":["-XX:+UseG1GC"],"env":{"cpu":"12","kernel":"26.5.1","cgroup_cpu":"unknown","cgroup_mem":"unknown"},"load_profile":"moderate-state-low-latency","phases":{"warmup_s":0,"measure_s":0},"kpis":{"throughput":4666.038,"p50_ms":1,"p99_ms":4,"p999_ms":4,"p9999_ms":4,"gc_pause_p99_ms":1,"alloc_rate_mb_s":0,"rss_mb":113,"native_mem_mb":0,"cpu_util_pct":26.33},"mode_kpis":{"events_per_second":4666.038,"window_latency_ms":0,"consumer_lag":0}}

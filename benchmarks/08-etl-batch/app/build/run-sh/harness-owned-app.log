@@ -1,0 +1,6 @@
+{"event":"started","benchmark":"08-etl-batch","port":18008}
+{"event":"job_completed","benchmark":"08-etl-batch","job_id":"job-2","records":50000,"throughput":159235}
+{"event":"job_completed","benchmark":"08-etl-batch","job_id":"job-4","records":50000,"throughput":165016}
+{"event":"job_completed","benchmark":"08-etl-batch","job_id":"job-3","records":50000,"throughput":163398}
+{"event":"job_completed","benchmark":"08-etl-batch","job_id":"job-1","records":50000,"throughput":159235}
+{"event":"job_completed","benchmark":"08-etl-batch","job_id":"job-5","records":50000,"throughput":1190476}
