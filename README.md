@@ -12,7 +12,7 @@ See `IMPLEMENTATION_STATUS.md` for the audited per-workload state.
 
 - OpenJDK HotSpot only.
 - JDK 8 through JDK 25 runtime discovery and experiment planning.
-- A Java 8-bytecode compatibility lane that runs unchanged source semantics across JDK 8–25.
+- A Java 8-bytecode compatibility lane that builds one hashed JAR per experiment and reuses that exact artifact across JDK 8–25.
 - Runtime-supported Serial, Parallel, CMS, G1, ZGC, Shenandoah and Epsilon collectors.
 - Startup, warm-up, JIT, code cache, GC, allocation, memory, concurrency, Vector API, FFM and container behaviour.
 - No proprietary JVM, compiler-service or confidential product integration.
@@ -37,7 +37,7 @@ The compatibility workload can also be tested directly:
 (cd benchmarks/00-runtime-compatibility/harness && ./run.sh test)
 ```
 
-Its classes target Java 8 bytecode. The current smoke script recompiles the same sources with each selected toolchain; a future measurement lane must build one hashed artifact once and reuse that exact artifact across all runtime runs.
+Its classes target Java 8 bytecode. During a `benchctl` experiment, the controller selects one discovered JDK with `javac`, builds the compatibility JAR once, stores its SHA-256 digest, and passes the same absolute artifact path to every selected runtime/collector combination.
 
 ## Result safety
 
