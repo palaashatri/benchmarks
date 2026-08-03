@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "run_kind": "smoke",
+  "workloads": ["01-fintech-ledger", "04-ml-inference-panama-vector", "07-coldstart-suite"],
+  "runtimes": ["all"],
+  "gcs": ["default"],
+  "repetitions": 1,
+  "requests": 20,
+  "threads": 4
+}
