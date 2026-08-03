@@ -1,9 +1,43 @@
 #!/usr/bin/env python3
 """Runtime-safe entry point layered over the dependency-free controller."""
 from __future__ import annotations
-import json, os, shutil, subprocess, time, urllib.error, urllib.request
+
+import json
+import os
+import shutil
+import subprocess
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
+
 import benchctl as core
+
+
+_original_build_plan = core.build_plan
+
+
+def constrained_build_plan(data: dict) -> dict:
+    """Remove workload/runtime combinations outside each implementation band."""
+    plan = _original_build_plan(data)
+    workload_rules = {item["id"]: item for item in core.catalog()}
+    accepted = []
+    for item in plan["items"]:
+        rule = workload_rules[item["workload"]]
+        minimum = int(rule.get("min_jdk", 8))
+        maximum = int(rule.get("max_jdk", 25))
+        feature = int(item["feature_version"])
+        if minimum <= feature <= maximum:
+            accepted.append(item)
+            continue
+        plan["skipped"].append({
+            "workload": item["workload"],
+            "runtime": item["runtime"],
+            "gc": item["gc"],
+            "reason": f"workload supports JDK {minimum}-{maximum}; runtime is JDK {feature}",
+        })
+    plan["items"] = accepted
+    return plan
 
 
 def _identity(url: str, process: subprocess.Popen[str], token: str) -> None:
@@ -11,6 +45,8 @@ def _identity(url: str, process: subprocess.Popen[str], token: str) -> None:
         with urllib.request.urlopen(url, timeout=1) as response:
             value = json.load(response)
     except urllib.error.HTTPError as exc:
+        # Older Tier-0 prototypes do not all expose /runtime yet. A random port
+        # plus process-liveness still prevents the stale fixed-port false pass.
         if exc.code == 404:
             return
         raise
@@ -26,23 +62,38 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
     run_dir.mkdir(parents=True)
     shutil.copy2(experiment_path, run_dir / "experiment.yaml")
     (run_dir / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
-    (run_dir / "environment.json").write_text(json.dumps(core.environment_fingerprint(), indent=2) + "\n")
+    (run_dir / "environment.json").write_text(
+        json.dumps(core.environment_fingerprint(), indent=2) + "\n")
     outputs = []
     for index, item in enumerate(plan["items"], 1):
         item_dir = run_dir / f"{index:03d}-{item['workload']}-{item['runtime']}-{item['gc']}"
         item_dir.mkdir()
         app_dir = core.ROOT / item["workload_path"] / "app"
         harness_dir = core.ROOT / item["workload_path"] / "harness"
-        env = os.environ.copy()
-        env["JAVA_HOME"] = item["java_home"]
-        env["PATH"] = str(Path(item["java_home"]) / "bin") + os.pathsep + env.get("PATH", "")
+
+        base_env = os.environ.copy()
+        base_env["JAVA_HOME"] = item["java_home"]
+        base_env["PATH"] = str(Path(item["java_home"]) / "bin") + os.pathsep + base_env.get("PATH", "")
         token = os.urandom(24).hex()
-        env["BENCH_RUN_TOKEN"] = token
+        base_env["BENCH_RUN_TOKEN"] = token
+
+        # Collector flags belong to the measured application JVM only. The load
+        # generator must not silently inherit the target collector selection.
+        app_env = base_env.copy()
         selected_flags = " ".join(item["gc_flags"])
-        env["JAVA_TOOL_OPTIONS"] = " ".join(v for v in (env.get("JAVA_TOOL_OPTIONS", "").strip(), selected_flags) if v)
+        app_env["JAVA_TOOL_OPTIONS"] = " ".join(
+            value for value in (base_env.get("JAVA_TOOL_OPTIONS", "").strip(), selected_flags) if value)
+        harness_env = base_env.copy()
+
         port = core.free_port()
         app_log = (item_dir / "app.log").open("w")
-        kwargs = {"cwd": app_dir, "env": env, "stdout": app_log, "stderr": subprocess.STDOUT, "text": True}
+        kwargs = {
+            "cwd": app_dir,
+            "env": app_env,
+            "stdout": app_log,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+        }
         if os.name == "posix":
             kwargs["start_new_session"] = True
         process = subprocess.Popen([str(app_dir / "run.sh"), "run", str(port)], **kwargs)
@@ -55,20 +106,29 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
                 "--base-url", f"http://127.0.0.1:{port}",
                 "--requests", str(item["requests"]),
                 "--threads", str(item["threads"]),
-                "--runs", "1", "--out", str(raw_path),
-            ], cwd=harness_dir, env=env, timeout=240)
+                "--runs", "1",
+                "--out", str(raw_path),
+            ], cwd=harness_dir, env=harness_env, timeout=240)
             (item_dir / "harness.log").write_text(result.combined + "\n")
             if result.returncode != 0 or not raw_path.exists():
-                raise core.BenchError(f"harness failed ({result.returncode}): {result.combined[-400:]}")
-            normalized = core.enrich_smoke_result(json.loads(raw_path.read_text()), item, run_id, process.pid)
+                raise core.BenchError(
+                    f"harness failed ({result.returncode}): {result.combined[-400:]}")
+            normalized = core.enrich_smoke_result(
+                json.loads(raw_path.read_text()), item, run_id, process.pid)
             normalized["run_kind"] = plan["run_kind"]
             normalized["measurement_valid"] = False
         except Exception as exc:
             normalized = {
-                "schema_version": core.RESULT_SCHEMA_VERSION, "run_id": run_id,
-                "run_kind": plan["run_kind"], "implementation_tier": item["tier"],
-                "measurement_valid": False, "invalid_reasons": [str(exc)], "warnings": [],
-                "workload": item["workload"], "runtime": item["runtime"], "gc": item["gc"],
+                "schema_version": core.RESULT_SCHEMA_VERSION,
+                "run_id": run_id,
+                "run_kind": plan["run_kind"],
+                "implementation_tier": item["tier"],
+                "measurement_valid": False,
+                "invalid_reasons": [str(exc)],
+                "warnings": [],
+                "workload": item["workload"],
+                "runtime": item["runtime"],
+                "gc": item["gc"],
                 "status": "failed",
             }
         finally:
@@ -77,11 +137,15 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
         (item_dir / "result.json").write_text(json.dumps(normalized, indent=2) + "\n")
         outputs.append(normalized)
     (run_dir / "result.json").write_text(json.dumps({
-        "schema_version": core.RESULT_SCHEMA_VERSION, "run_id": run_id,
-        "run_kind": plan["run_kind"], "measurement_valid": False, "results": outputs,
+        "schema_version": core.RESULT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "run_kind": plan["run_kind"],
+        "measurement_valid": False,
+        "results": outputs,
     }, indent=2) + "\n")
     return run_dir
 
 
+core.build_plan = constrained_build_plan
 core.run_plan = safe_run_plan
 raise SystemExit(core.main())
