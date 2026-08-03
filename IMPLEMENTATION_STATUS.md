@@ -9,7 +9,7 @@ Last audited: 2026-08-03.
 - Tier 2 workloads: **0**
 - Measurement-valid benchmark harnesses: **0**
 - JDK 8–25 controller support: runtime discovery, collector probing, implementation-band filtering and planning implemented
-- Compatibility lane: Java 8-bytecode smoke workload implemented for JDK 8–25; exact single-artifact measurement reuse remains pending
+- Compatibility lane: Java 8-bytecode smoke workload implemented; one hashed JAR is reused across all selected JDK/GC runs
 - Publication-ready comparisons: **none**
 
 The old committed results were removed because they mixed smoke traffic with hardcoded runtime metadata and load-generator JVM telemetry. They must not be used for JVM conclusions.
@@ -18,7 +18,7 @@ The old committed results were removed because they mixed smoke traffic with har
 
 | # | Workload | Tier | Audited state |
 |---|---|---:|---|
-| 00 | Runtime compatibility | 1 | Deterministic Java 8-bytecode sort/compress/hash workload and Java 8-compatible harness; smoke only. |
+| 00 | Runtime compatibility | 1 | Deterministic Java 8-bytecode sort/compress/hash workload; `benchctl` builds one JAR and records/reuses its SHA-256 digest across runtimes. |
 | 01 | Fintech ledger | 1 | Real H2/Hikari transactions, isolated process identity and balance-conservation checks; Tier 2 app telemetry still pending. |
 | 02 | Microservices mesh | 1 | Multiple HTTP servers, but all services share one JVM/process. |
 | 03 | Streaming analytics | 1 | In-memory queue/window processor; no real broker/state backend. |
@@ -36,12 +36,14 @@ The old committed results were removed because they mixed smoke traffic with har
 ## Foundation delivered on the repair branch
 
 - Repository-wide generated-artifact cleanup and ignore rules.
-- Single authoritative `AGENTS.md`; misleading root status/agent duplicates removed.
+- Single authoritative `AGENTS.md`; duplicated per-benchmark agent instructions removed.
+- Public-scope hygiene gate rejects proprietary/runtime-out-of-scope terminology.
 - Dependency-free `benchctl` controller.
 - OpenJDK runtime and collector capability discovery.
 - Workload JDK compatibility bands and invalid-combination skipping.
 - Experiment validation and matrix planning.
 - Truthful smoke result envelopes and invalid-comparison refusal.
+- All legacy load-generator JVM/OS metrics are discarded during normalization.
 - Versioned experiment, runtime and result schemas.
 - Workload catalog with audited tiers.
 - Controller unit tests and JDK 8/11/17/21/25 discovery CI.
@@ -51,8 +53,8 @@ The old committed results were removed because they mixed smoke traffic with har
 ## Highest-priority remaining work
 
 1. Make benchmark 01 Tier 2 with application-process JFR/GC/NMT/CPU/RSS telemetry.
-2. Build the Java 8 compatibility artifact once, checksum it, and reuse the exact artifact across JDK 8–25 runs.
-3. Replace legacy closed-loop harnesses with a shared open-loop HdrHistogram load engine.
+2. Replace legacy closed-loop harnesses with a shared open-loop HdrHistogram load engine.
+3. Add per-repetition statistics, steady-state detection and controlled environment comparison gates.
 4. Repair HFT symbol/partial-fill correctness and implement real gRPC before promotion.
 5. Add correctness/invariant tests for every remaining workload.
 6. Promote workloads individually; never mark all workloads complete based on smoke checks.
