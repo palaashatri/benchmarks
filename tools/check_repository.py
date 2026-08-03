@@ -9,10 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_PATH_PARTS = {"build", "target", ".gradle", "results"}
 FORBIDDEN_SUFFIXES = {".class", ".jar", ".log", ".pid", ".jfr", ".hprof"}
 FORBIDDEN_PUBLIC_TERMS = (
-    "Azul Platform Prime",
-    "Optimizer Hub",
-    "Cloud Native Compiler",
-    "Compilation Streaming",
+    "Azul Platform" + " Prime",
+    "Optimizer" + " Hub",
+    "Cloud Native" + " Compiler",
+    "Compilation" + " Streaming",
 )
 TEXT_SUFFIXES = {".md", ".java", ".kt", ".kts", ".py", ".sh", ".yml", ".yaml", ".json", ".xml", ".proto"}
 
