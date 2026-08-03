@@ -68,6 +68,45 @@ class BenchctlTests(unittest.TestCase):
             benchctl_entry._original_build_plan = original_plan
             benchctl_entry.core.catalog = original_catalog
 
+    def test_legacy_process_metrics_are_always_discarded(self):
+        result = {
+            "env": {"kernel": "wrong-process"},
+            "kpis": {
+                "throughput": 100,
+                "gc_pause_p99_ms": 17,
+                "alloc_rate_mb_s": 23,
+                "rss_mb": 512,
+                "native_mem_mb": 300,
+                "cpu_util_pct": 87.5,
+            },
+            "phases": {"warmup_s": 1, "measure_s": 2},
+            "warnings": [],
+        }
+        sanitized = benchctl_entry._sanitize_legacy_result(result)
+        self.assertNotIn("env", sanitized)
+        self.assertEqual(100, sanitized["kpis"]["throughput"])
+        for key in ("gc_pause_p99_ms", "alloc_rate_mb_s", "rss_mb", "native_mem_mb", "cpu_util_pct"):
+            self.assertIsNone(sanitized["kpis"][key])
+        self.assertIsNone(sanitized["phases"]["warmup_s"])
+        self.assertIsNone(sanitized["phases"]["measure_s"])
+
+    def test_aggregate_result_validation(self):
+        child = {
+            "schema_version": "1.0.0",
+            "run_kind": "smoke",
+            "implementation_tier": "tier-1",
+            "measurement_valid": False,
+            "invalid_reasons": ["smoke"],
+            "warnings": [],
+        }
+        aggregate = {
+            "schema_version": "1.0.0",
+            "run_kind": "smoke",
+            "measurement_valid": False,
+            "results": [child],
+        }
+        self.assertEqual([], benchctl_entry.validate_result_document(aggregate))
+
 
 if __name__ == "__main__":
     unittest.main()
