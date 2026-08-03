@@ -13,6 +13,9 @@ FORBIDDEN_PUBLIC_TERMS = (
     "Optimizer" + " Hub",
     "Cloud Native" + " Compiler",
     "Compilation" + " Streaming",
+    "Graal" + "VM",
+    "Open" + "J9",
+    "C" + "RaC",
 )
 TEXT_SUFFIXES = {".md", ".java", ".kt", ".kts", ".py", ".sh", ".yml", ".yaml", ".json", ".xml", ".proto"}
 
@@ -29,14 +32,14 @@ def main() -> int:
         parts = set(rel.parts)
         if parts & FORBIDDEN_PATH_PARTS or rel.suffix.lower() in FORBIDDEN_SUFFIXES or rel.name == ".DS_Store":
             failures.append(f"generated artifact is tracked: {rel}")
-        if rel.name == "STATUS.md" or rel == Path("CLAUDE.md"):
-            failures.append(f"duplicate root truth document is tracked: {rel}")
+        if rel.name in {"CLAUDE.md", "STATUS.md"}:
+            failures.append(f"duplicate truth document is tracked: {rel}")
         path = ROOT / rel
         if path.suffix.lower() in TEXT_SUFFIXES and path.is_file():
             text = path.read_text(errors="replace")
             for term in FORBIDDEN_PUBLIC_TERMS:
                 if term.lower() in text.lower():
-                    failures.append(f"public-scope term {term!r} found in {rel}")
+                    failures.append(f"out-of-scope public term {term!r} found in {rel}")
     for manifest in (ROOT / "experiments").glob("*.yaml"):
         try:
             data = json.loads(manifest.read_text())
