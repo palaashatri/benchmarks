@@ -4,16 +4,11 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Timer;
-import io.micrometer.core.instrument.binder.jvm.JvmGcMetrics;
-import io.micrometer.core.instrument.binder.jvm.JvmMemoryMetrics;
-import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
-import io.micrometer.prometheusmetrics.PrometheusConfig;
-import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryUsage;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -21,353 +16,316 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class MiniHttpServer {
+    private final String benchmark;
     private final HikariDataSource dataSource;
-    private final PrometheusMeterRegistry registry;
-    private final Counter txnCounter;
-    private final Counter fraudRejectedCounter;
-    private final Timer txnTimer;
-    private final AtomicLong txnIds = new AtomicLong(1);
+    private final AtomicLong transactionIds = new AtomicLong(1);
+    private final AtomicLong approvedTransactions = new AtomicLong();
+    private final AtomicLong rejectedTransactions = new AtomicLong();
+    private final AtomicLong transactionDurationNs = new AtomicLong();
 
-    public MiniHttpServer(String benchmark, String title) {
-        // Setup HikariCP with H2 in-memory
-        HikariConfig cfg = new HikariConfig();
-        cfg.setJdbcUrl("jdbc:h2:mem:ledger;DB_CLOSE_DELAY=-1;MODE=PostgreSQL");
-        cfg.setUsername("sa");
-        cfg.setPassword("");
-        cfg.setMaximumPoolSize(20);
-        cfg.setMinimumIdle(4);
-        cfg.setConnectionTimeout(3000);
-        cfg.setPoolName("ledger-pool");
-        this.dataSource = new HikariDataSource(cfg);
-
-        // Setup Micrometer Prometheus registry
-        this.registry = new PrometheusMeterRegistry(PrometheusConfig.DEFAULT);
-        new JvmMemoryMetrics().bindTo(registry);
-        new JvmGcMetrics().bindTo(registry);
-        new ProcessorMetrics().bindTo(registry);
-
-        // Register business metrics
-        this.txnCounter = Counter.builder("ledger_transactions_total")
-                .description("Total ledger transactions")
-                .register(registry);
-        this.fraudRejectedCounter = Counter.builder("ledger_fraud_rejected_total")
-                .description("Total fraud-rejected transactions")
-                .register(registry);
-        this.txnTimer = Timer.builder("ledger_txn_duration_seconds")
-                .description("Transaction duration")
-                .register(registry);
-
-        initSchema();
-        seedAccounts();
+    public MiniHttpServer(String benchmark) {
+        this.benchmark = benchmark;
+        HikariConfig config = new HikariConfig();
+        config.setJdbcUrl("jdbc:h2:mem:ledger;DB_CLOSE_DELAY=-1;MODE=PostgreSQL");
+        config.setUsername("sa");
+        config.setPassword("");
+        config.setMaximumPoolSize(20);
+        config.setMinimumIdle(4);
+        config.setConnectionTimeout(3_000);
+        config.setPoolName("ledger-pool");
+        dataSource = new HikariDataSource(config);
+        initializeDatabase();
     }
 
-    private void initSchema() {
-        try (Connection conn = dataSource.getConnection();
-             Statement st = conn.createStatement()) {
-            st.execute("CREATE TABLE IF NOT EXISTS accounts (" +
-                    "id VARCHAR(32) PRIMARY KEY, " +
-                    "balance_cents BIGINT NOT NULL DEFAULT 0, " +
-                    "version INT NOT NULL DEFAULT 0)");
-            st.execute("CREATE TABLE IF NOT EXISTS transactions (" +
-                    "id VARCHAR(64) PRIMARY KEY, " +
-                    "from_acct VARCHAR(32), " +
-                    "to_acct VARCHAR(32), " +
-                    "amount_cents BIGINT, " +
-                    "ts BIGINT, " +
-                    "status VARCHAR(16), " +
-                    "fraud_score INT)");
-        } catch (SQLException e) {
-            throw new RuntimeException("Schema init failed", e);
+    private void initializeDatabase() {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE accounts ("
+                    + "id VARCHAR(32) PRIMARY KEY,"
+                    + "balance_cents BIGINT NOT NULL,"
+                    + "version BIGINT NOT NULL)");
+            statement.execute("CREATE TABLE ledger_entries ("
+                    + "id VARCHAR(64) PRIMARY KEY,"
+                    + "from_account VARCHAR(32) NOT NULL,"
+                    + "to_account VARCHAR(32) NOT NULL,"
+                    + "amount_cents BIGINT NOT NULL,"
+                    + "created_at_ms BIGINT NOT NULL,"
+                    + "fraud_score INT NOT NULL)");
+        } catch (SQLException exception) {
+            throw new IllegalStateException("database schema initialization failed", exception);
         }
-    }
 
-    private void seedAccounts() {
-        try (Connection conn = dataSource.getConnection()) {
-            conn.setAutoCommit(false);
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO accounts(id, balance_cents, version) VALUES(?,?,0) " +
-                    "ON DUPLICATE KEY UPDATE balance_cents=balance_cents")) {
-                for (int i = 1; i <= 2000; i++) {
-                    ps.setString(1, String.valueOf(i));
-                    ps.setLong(2, 1_000_000L);
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement insert = connection.prepareStatement(
+                     "INSERT INTO accounts(id,balance_cents,version) VALUES(?,?,0)")) {
+            connection.setAutoCommit(false);
+            for (int account = 1; account <= 2_000; account++) {
+                insert.setString(1, Integer.toString(account));
+                insert.setLong(2, 1_000_000L);
+                insert.addBatch();
             }
-            // Override special accounts
-            try (PreparedStatement ps = conn.prepareStatement(
-                    "MERGE INTO accounts(id, balance_cents, version) KEY(id) VALUES(?,?,0)")) {
-                ps.setString(1, "1001"); ps.setLong(2, 1_500_000L); ps.executeUpdate();
-                ps.setString(1, "1002"); ps.setLong(2, 1_250_000L); ps.executeUpdate();
-            }
-            conn.commit();
-        } catch (SQLException e) {
-            throw new RuntimeException("Seed failed", e);
+            insert.executeBatch();
+            connection.commit();
+        } catch (SQLException exception) {
+            throw new IllegalStateException("account seeding failed", exception);
         }
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
-        server.createContext("/health", this::handleHealth);
-        server.createContext("/actuator/health", this::handleHealth);
-        server.createContext("/metrics", this::handleMetrics);
-        server.createContext("/actuator/prometheus", this::handleMetrics);
-        server.createContext("/transfers", this::handleTransfers);
-        server.createContext("/accounts/", this::handleAccounts);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 512);
+        server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
+        server.createContext("/metrics", this::metrics);
+        server.createContext("/transfers", this::transfers);
+        server.createContext("/accounts/", this::accounts);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        System.out.println("{\"event\":\"started\",\"port\":" + port + "}");
+        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"port\":%d,\"pid\":%d}%n",
+                benchmark, port, ProcessHandle.current().pid());
     }
 
-    private void handleHealth(HttpExchange ex) throws IOException {
-        int active = 0;
-        int idle = 0;
-        try {
-            var pool = dataSource;
-            active = pool.getHikariPoolMXBean().getActiveConnections();
-            idle = pool.getHikariPoolMXBean().getIdleConnections();
-        } catch (Exception ignored) { }
-        json(ex, 200, "{\"status\":\"UP\",\"db_pool_active\":" + active + ",\"db_pool_idle\":" + idle + "}");
+    private void health(HttpExchange exchange) throws IOException {
+        json(exchange, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark
+                + "\",\"pid\":" + ProcessHandle.current().pid() + "}");
     }
 
-    private void handleMetrics(HttpExchange ex) throws IOException {
-        String body = registry.scrape();
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
+    private void runtime(HttpExchange exchange) throws IOException {
+        String token = System.getenv().getOrDefault("BENCH_RUN_TOKEN", "");
+        StringBuilder arguments = new StringBuilder("[");
+        List<String> inputArguments = ManagementFactory.getRuntimeMXBean().getInputArguments();
+        for (int index = 0; index < inputArguments.size(); index++) {
+            if (index > 0) arguments.append(',');
+            arguments.append('"').append(escape(inputArguments.get(index))).append('"');
+        }
+        arguments.append(']');
+        json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid()
+                + ",\"run_token\":\"" + escape(token) + "\""
+                + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
+                + ",\"java_vendor\":\"" + escape(System.getProperty("java.vendor")) + "\""
+                + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\""
+                + ",\"input_arguments\":" + arguments + "}");
     }
 
-    private void handleTransfers(HttpExchange ex) throws IOException {
-        if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
-            json(ex, 405, "{\"error\":\"method not allowed\"}");
+    private void metrics(HttpExchange exchange) throws IOException {
+        long gcCollections = 0;
+        long gcCollectionMs = 0;
+        for (var collector : ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (collector.getCollectionCount() >= 0) gcCollections += collector.getCollectionCount();
+            if (collector.getCollectionTime() >= 0) gcCollectionMs += collector.getCollectionTime();
+        }
+        MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+        int active = dataSource.getHikariPoolMXBean().getActiveConnections();
+        int idle = dataSource.getHikariPoolMXBean().getIdleConnections();
+        String body = "# TYPE ledger_transactions_total counter\n"
+                + "ledger_transactions_total " + approvedTransactions.get() + "\n"
+                + "# TYPE ledger_rejected_transactions_total counter\n"
+                + "ledger_rejected_transactions_total " + rejectedTransactions.get() + "\n"
+                + "# TYPE ledger_transaction_duration_seconds_sum counter\n"
+                + "ledger_transaction_duration_seconds_sum " + format(transactionDurationNs.get() / 1_000_000_000.0) + "\n"
+                + "# TYPE ledger_pool_active gauge\nledger_pool_active " + active + "\n"
+                + "# TYPE ledger_pool_idle gauge\nledger_pool_idle " + idle + "\n"
+                + "# TYPE jvm_memory_used_bytes gauge\njvm_memory_used_bytes{area=\"heap\"} " + heap.getUsed() + "\n"
+                + "# TYPE jvm_gc_collections_total counter\njvm_gc_collections_total " + gcCollections + "\n"
+                + "# TYPE jvm_gc_collection_seconds_total counter\njvm_gc_collection_seconds_total " + format(gcCollectionMs / 1_000.0) + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
+    }
+
+    private void transfers(HttpExchange exchange) throws IOException {
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
             return;
         }
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        String from = field(body, "from", "1001");
-        String to = field(body, "to", "1002");
-        long amount = number(body, "amount_cents", 125L);
+        long started = System.nanoTime();
+        String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String from = stringField(body, "from", "");
+        String to = stringField(body, "to", "");
+        long amount = longField(body, "amount_cents", -1);
+        if (from.isBlank() || to.isBlank() || from.equals(to) || amount <= 0) {
+            rejectedTransactions.incrementAndGet();
+            json(exchange, 400, "{\"approved\":false,\"reason\":\"invalid_request\"}");
+            return;
+        }
+        int fraudScore = Math.floorMod((from + ':' + to + ':' + amount).hashCode(), 1_000);
+        if (fraudScore >= 970) {
+            rejectedTransactions.incrementAndGet();
+            json(exchange, 200, "{\"approved\":false,\"reason\":\"fraud\",\"fraud_score\":" + fraudScore + "}");
+            return;
+        }
 
-        long start = System.nanoTime();
-        String transferId = "txn-" + txnIds.getAndIncrement();
-        boolean approved = false;
-        long fromBalance = 0L;
-        int fraudScore = 0;
-
-        try (Connection conn = dataSource.getConnection()) {
-            conn.setAutoCommit(false);
+        String first = Comparator.<String>naturalOrder().compare(from, to) <= 0 ? from : to;
+        String second = first.equals(from) ? to : from;
+        String transferId = "txn-" + transactionIds.getAndIncrement();
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
             try {
-                // Lock and read from account
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT balance_cents FROM accounts WHERE id=? FOR UPDATE")) {
-                    ps.setString(1, from);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) fromBalance = rs.getLong(1);
-                    }
-                }
-
-                fraudScore = Math.abs((from + to + String.valueOf(amount)).hashCode()) % 1000;
-
-                if (fraudScore > 900) {
-                    conn.rollback();
-                    fraudRejectedCounter.increment();
-                    txnTimer.record(Duration.ofNanos(System.nanoTime() - start));
-                    json(ex, 200, "{\"transfer_id\":\"" + transferId +
-                            "\",\"approved\":false,\"fraud_score\":" + fraudScore + "}");
+                lockAccount(connection, first);
+                lockAccount(connection, second);
+                long fromBalance = balance(connection, from);
+                balance(connection, to);
+                if (fromBalance < amount) {
+                    connection.rollback();
+                    rejectedTransactions.incrementAndGet();
+                    json(exchange, 200, "{\"approved\":false,\"reason\":\"insufficient_funds\"}");
                     return;
                 }
-
-                // Deduct from sender
-                int deducted;
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE accounts SET balance_cents=balance_cents-?, version=version+1 " +
-                        "WHERE id=? AND balance_cents>=?")) {
-                    ps.setLong(1, amount);
-                    ps.setString(2, from);
-                    ps.setLong(3, amount);
-                    deducted = ps.executeUpdate();
+                updateBalance(connection, from, -amount);
+                updateBalance(connection, to, amount);
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO ledger_entries(id,from_account,to_account,amount_cents,created_at_ms,fraud_score) VALUES(?,?,?,?,?,?)")) {
+                    insert.setString(1, transferId);
+                    insert.setString(2, from);
+                    insert.setString(3, to);
+                    insert.setLong(4, amount);
+                    insert.setLong(5, System.currentTimeMillis());
+                    insert.setInt(6, fraudScore);
+                    insert.executeUpdate();
                 }
-
-                if (deducted != 1) {
-                    conn.rollback();
-                    txnTimer.record(Duration.ofNanos(System.nanoTime() - start));
-                    json(ex, 200, "{\"transfer_id\":\"" + transferId +
-                            "\",\"approved\":false,\"reason\":\"insufficient_funds\",\"fraud_score\":" + fraudScore + "}");
-                    return;
-                }
-
-                // Credit recipient
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "UPDATE accounts SET balance_cents=balance_cents+?, version=version+1 WHERE id=?")) {
-                    ps.setLong(1, amount);
-                    ps.setString(2, to);
-                    ps.executeUpdate();
-                }
-
-                // Record transaction
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "INSERT INTO transactions(id,from_acct,to_acct,amount_cents,ts,status,fraud_score) " +
-                        "VALUES(?,?,?,?,?,?,?)")) {
-                    ps.setString(1, transferId);
-                    ps.setString(2, from);
-                    ps.setString(3, to);
-                    ps.setLong(4, amount);
-                    ps.setLong(5, System.currentTimeMillis());
-                    ps.setString(6, "COMPLETED");
-                    ps.setInt(7, fraudScore);
-                    ps.executeUpdate();
-                }
-
-                conn.commit();
-                approved = true;
-
-                // Re-read from balance for response
-                try (PreparedStatement ps = conn.prepareStatement(
-                        "SELECT balance_cents FROM accounts WHERE id=?")) {
-                    conn.setAutoCommit(true);
-                    ps.setString(1, from);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) fromBalance = rs.getLong(1);
-                    }
-                }
-            } catch (SQLException e) {
-                conn.rollback();
-                throw e;
+                connection.commit();
+                approvedTransactions.incrementAndGet();
+                transactionDurationNs.addAndGet(System.nanoTime() - started);
+                json(exchange, 200, "{\"transfer_id\":\"" + transferId
+                        + "\",\"approved\":true,\"from_balance_cents\":" + (fromBalance - amount)
+                        + ",\"fraud_score\":" + fraudScore + "}");
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
             }
-        } catch (SQLException e) {
-            json(ex, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-            return;
+        } catch (SQLException exception) {
+            rejectedTransactions.incrementAndGet();
+            json(exchange, 500, "{\"error\":\"database_error\",\"message\":\""
+                    + escape(exception.getMessage()) + "\"}");
         }
-
-        txnCounter.increment();
-        txnTimer.record(Duration.ofNanos(System.nanoTime() - start));
-        json(ex, 200, "{\"transfer_id\":\"" + transferId +
-                "\",\"approved\":" + approved +
-                ",\"from_balance_cents\":" + fromBalance +
-                ",\"fraud_score\":" + fraudScore + "}");
     }
 
-    private void handleAccounts(HttpExchange ex) throws IOException {
-        String path = ex.getRequestURI().getPath();
-
-        // GET /accounts/{id}/balance
-        if (path.matches("/accounts/[^/]+/balance")) {
-            String accountId = path.split("/")[2];
-            try (Connection conn = dataSource.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
-                         "SELECT balance_cents FROM accounts WHERE id=?")) {
-                ps.setString(1, accountId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        long bal = rs.getLong(1);
-                        json(ex, 200, "{\"account_id\":\"" + escape(accountId) +
-                                "\",\"balance_cents\":" + bal + "}");
-                    } else {
-                        json(ex, 404, "{\"error\":\"account not found\",\"account_id\":\"" + escape(accountId) + "\"}");
-                    }
-                }
-            } catch (SQLException e) {
-                json(ex, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
+    private void accounts(HttpExchange exchange) throws IOException {
+        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
+        }
+        String[] pieces = exchange.getRequestURI().getPath().split("/");
+        if (pieces.length != 4) {
+            json(exchange, 404, "{\"error\":\"not_found\"}");
+            return;
+        }
+        String accountId = pieces[2];
+        if ("balance".equals(pieces[3])) {
+            try (Connection connection = dataSource.getConnection()) {
+                json(exchange, 200, "{\"account_id\":\"" + escape(accountId)
+                        + "\",\"balance_cents\":" + balance(connection, accountId) + "}");
+            } catch (SQLException exception) {
+                json(exchange, 404, "{\"error\":\"account_not_found\"}");
             }
             return;
         }
-
-        // GET /accounts/{id}/transactions
-        if (path.matches("/accounts/[^/]+/transactions")) {
-            String accountId = path.split("/")[2];
-            StringBuilder entries = new StringBuilder("[");
-            try (Connection conn = dataSource.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
-                         "SELECT id,from_acct,to_acct,amount_cents,ts,status,fraud_score " +
-                         "FROM transactions WHERE from_acct=? OR to_acct=? ORDER BY ts DESC LIMIT 10")) {
-                ps.setString(1, accountId);
-                ps.setString(2, accountId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    boolean first = true;
-                    while (rs.next()) {
-                        if (!first) entries.append(",");
-                        entries.append("{\"id\":\"").append(escape(rs.getString(1)))
-                                .append("\",\"from\":\"").append(escape(rs.getString(2)))
-                                .append("\",\"to\":\"").append(escape(rs.getString(3)))
-                                .append("\",\"amount_cents\":").append(rs.getLong(4))
-                                .append(",\"ts\":").append(rs.getLong(5))
-                                .append(",\"status\":\"").append(escape(rs.getString(6)))
-                                .append("\",\"fraud_score\":").append(rs.getInt(7))
-                                .append("}");
-                        first = false;
+        if ("transactions".equals(pieces[3])) {
+            List<String> entries = new ArrayList<>();
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement query = connection.prepareStatement(
+                         "SELECT id,from_account,to_account,amount_cents,created_at_ms,fraud_score "
+                                 + "FROM ledger_entries WHERE from_account=? OR to_account=? ORDER BY created_at_ms DESC LIMIT 20")) {
+                query.setString(1, accountId);
+                query.setString(2, accountId);
+                try (ResultSet result = query.executeQuery()) {
+                    while (result.next()) {
+                        entries.add("{\"id\":\"" + escape(result.getString(1))
+                                + "\",\"from\":\"" + escape(result.getString(2))
+                                + "\",\"to\":\"" + escape(result.getString(3))
+                                + "\",\"amount_cents\":" + result.getLong(4)
+                                + ",\"created_at_ms\":" + result.getLong(5)
+                                + ",\"fraud_score\":" + result.getInt(6) + "}");
                     }
                 }
-            } catch (SQLException e) {
-                json(ex, 500, "{\"error\":\"" + escape(e.getMessage()) + "\"}");
-                return;
+                json(exchange, 200, "{\"account_id\":\"" + escape(accountId)
+                        + "\",\"transactions\":[" + String.join(",", entries) + "]}");
+            } catch (SQLException exception) {
+                json(exchange, 500, "{\"error\":\"database_error\"}");
             }
-            entries.append("]");
-            json(ex, 200, "{\"account_id\":\"" + escape(accountId) +
-                    "\",\"transactions\":" + entries + "}");
             return;
         }
-
-        json(ex, 404, "{\"error\":\"not found\",\"path\":\"" + escape(path) + "\"}");
+        json(exchange, 404, "{\"error\":\"not_found\"}");
     }
 
-    // --- Static helpers ---
-
-    private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1); if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1); if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
+    private static void lockAccount(Connection connection, String accountId) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement("SELECT id FROM accounts WHERE id=? FOR UPDATE")) {
+            query.setString(1, accountId);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new SQLException("account does not exist: " + accountId);
+            }
+        }
     }
 
-    private static long number(String body, String name, long fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
+    private static long balance(Connection connection, String accountId) throws SQLException {
+        try (PreparedStatement query = connection.prepareStatement("SELECT balance_cents FROM accounts WHERE id=?")) {
+            query.setString(1, accountId);
+            try (ResultSet result = query.executeQuery()) {
+                if (!result.next()) throw new SQLException("account does not exist: " + accountId);
+                return result.getLong(1);
+            }
+        }
+    }
+
+    private static void updateBalance(Connection connection, String accountId, long delta) throws SQLException {
+        try (PreparedStatement update = connection.prepareStatement("UPDATE accounts SET balance_cents=balance_cents+?,version=version+1 WHERE id=?")) {
+            update.setLong(1, delta);
+            update.setString(2, accountId);
+            if (update.executeUpdate() != 1) throw new SQLException("account update failed: " + accountId);
+        }
+    }
+
+    private static String stringField(String body, String name, String fallback) {
+        String key = "\"" + name + "\"";
+        int keyIndex = body.indexOf(key);
+        if (keyIndex < 0) return fallback;
+        int colon = body.indexOf(':', keyIndex + key.length());
+        int start = body.indexOf('"', colon + 1);
+        int end = start < 0 ? -1 : body.indexOf('"', start + 1);
+        return start < 0 || end < 0 ? fallback : body.substring(start + 1, end);
+    }
+
+    private static long longField(String body, String name, long fallback) {
+        String key = "\"" + name + "\"";
+        int keyIndex = body.indexOf(key);
+        if (keyIndex < 0) return fallback;
+        int colon = body.indexOf(':', keyIndex + key.length());
+        if (colon < 0) return fallback;
         int start = colon + 1;
         while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
         int end = start;
         while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static String escape(String raw) {
-        if (raw == null) return "";
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"' -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default -> {
-                    if (c < 0x20) {
-                        out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c));
-                    } else {
-                        out.append(c);
-                    }
-                }
-            }
+        try {
+            return Long.parseLong(body.substring(start, end));
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
-        return out.toString();
     }
 
-    private static void json(HttpExchange ex, int status, String body) throws IOException {
-        bytes(ex, status, "application/json", body);
+    private static String escape(String value) {
+        if (value == null) return "";
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r");
     }
 
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) {
-            out.write(data);
+    private static String format(double value) {
+        return String.format(java.util.Locale.ROOT, "%.6f", value);
+    }
+
+    private static void json(HttpExchange exchange, int status, String body) throws IOException {
+        bytes(exchange, status, "application/json", body);
+    }
+
+    private static void bytes(HttpExchange exchange, int status, String contentType, String body) throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(payload);
         }
     }
 }
