@@ -1,2 +1,0 @@
-Run 1/1: throughput=342.3 rps
-{"benchmark":"08-etl-batch","runtime":"openjdk-hotspot-21","gc":"G1","jvm_flags":["-XX:+UseG1GC"],"env":{"cpu":"12","kernel":"26.5.1","cgroup_cpu":"unknown","cgroup_mem":"unknown"},"load_profile":"small","phases":{"warmup_s":0,"measure_s":0},"kpis":{"throughput":342.324,"p50_ms":6,"p99_ms":50,"p999_ms":50,"p9999_ms":50,"gc_pause_p99_ms":0,"alloc_rate_mb_s":0,"rss_mb":106,"native_mem_mb":0,"cpu_util_pct":0.0},"mode_kpis":{"records_per_second":0.00,"chunk_time_ms":0,"io_throughput_mb_s":0}}
