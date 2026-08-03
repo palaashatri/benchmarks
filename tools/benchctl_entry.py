@@ -15,6 +15,7 @@ import benchctl as core
 
 
 _original_build_plan = core.build_plan
+_original_validate_result = core.validate_result
 
 
 def constrained_build_plan(data: dict) -> dict:
@@ -40,6 +41,26 @@ def constrained_build_plan(data: dict) -> dict:
     return plan
 
 
+def validate_result_document(data: dict) -> list[str]:
+    """Validate either one normalized result or a run-level aggregate."""
+    if "results" not in data:
+        return _original_validate_result(data)
+    errors = []
+    for key in ("schema_version", "run_kind", "measurement_valid", "results"):
+        if key not in data:
+            errors.append(f"missing required aggregate field: {key}")
+    if not isinstance(data.get("results"), list):
+        errors.append("aggregate results must be an array")
+        return errors
+    for index, result in enumerate(data["results"]):
+        for error in _original_validate_result(result):
+            errors.append(f"results[{index}]: {error}")
+    if data.get("measurement_valid") is True and any(
+            not item.get("measurement_valid", False) for item in data["results"]):
+        errors.append("aggregate cannot be valid when a child result is invalid")
+    return errors
+
+
 def _identity(url: str, process: subprocess.Popen[str], token: str) -> None:
     try:
         with urllib.request.urlopen(url, timeout=1) as response:
@@ -52,6 +73,32 @@ def _identity(url: str, process: subprocess.Popen[str], token: str) -> None:
         raise
     if value.get("run_token") != token or int(value.get("pid", -1)) != process.pid:
         raise core.BenchError("runtime identity mismatch; unrelated process detected")
+
+
+def _sanitize_legacy_result(result: dict) -> dict:
+    """Discard metrics known to come from the legacy load-generator process."""
+    result.pop("env", None)
+    kpis = result.get("kpis")
+    if isinstance(kpis, dict):
+        for name in (
+            "gc_pause_p99_ms",
+            "gc_total_ms",
+            "alloc_rate_mb_s",
+            "rss_mb",
+            "native_mem_mb",
+            "cpu_util_pct",
+            "process_cpu_pct",
+        ):
+            kpis[name] = None
+    phases = result.get("phases")
+    if isinstance(phases, dict):
+        phases["warmup_s"] = None
+        phases["measure_s"] = None
+    warnings = result.setdefault("warnings", [])
+    warning = "Legacy harness JVM/OS metrics were discarded because they describe the load generator, not the application"
+    if warning not in warnings:
+        warnings.append(warning)
+    return result
 
 
 def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
@@ -117,6 +164,7 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
                 json.loads(raw_path.read_text()), item, run_id, process.pid)
             normalized["run_kind"] = plan["run_kind"]
             normalized["measurement_valid"] = False
+            normalized = _sanitize_legacy_result(normalized)
         except Exception as exc:
             normalized = {
                 "schema_version": core.RESULT_SCHEMA_VERSION,
@@ -148,6 +196,7 @@ def safe_run_plan(plan: dict, experiment_path: Path) -> Path:
 
 def main() -> int:
     core.build_plan = constrained_build_plan
+    core.validate_result = validate_result_document
     core.run_plan = safe_run_plan
     return core.main()
 
