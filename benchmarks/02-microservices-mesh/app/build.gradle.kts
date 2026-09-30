@@ -19,3 +19,8 @@ tasks.withType<JavaCompile>().configureEach {
 application {
     mainClass.set("com.palaashatri.bench.b02.app.BenchmarkApp")
 }
+
+sourceSets.main { java.srcDir("../../common/src/main/java") }
+
+tasks.register<Exec>("architectureTest") { commandLine("sh", "./run.sh", "test") }
+tasks.named<Test>("test") { dependsOn("architectureTest") }

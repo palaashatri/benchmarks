@@ -1,33 +1,161 @@
-openapi: 3.0.3
-info:
-  title: HFT Trading Gateway contract
-  version: 0.2.0
-paths:
-  /health:
-    get:
-      responses:
-        '200': {description: healthy}
-  /metrics:
-    get:
-      responses:
-        '200': {description: prometheus metrics}
-  /actuator/health:
-    get:
-      responses:
-        '200': {description: actuator health}
-  /actuator/prometheus:
-    get:
-      responses:
-        '200': {description: actuator prometheus metrics}
-  /grpc/SubmitOrder:
-    post:
-      responses:
-        '200': {description: Submit JSON order over local gRPC-shaped shim}
-  /grpc/CancelOrder:
-    post:
-      responses:
-        '200': {description: Cancel JSON order over local shim}
-  /grpc/GetOrderStatus/{orderId}:
-    get:
-      responses:
-        '200': {description: Read order status over local shim}
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "12-hft-trading-gateway HTTP contract",
+    "version": "0.3.0"
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8080"
+    }
+  ],
+  "paths": {
+    "/orders": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Submit an order; accepted field reports engine validation"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orders/{id}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Order status and remaining quantity"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        }
+      },
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "Cancel remaining quantity"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/grpc/SubmitOrder": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Ordinary HTTP alias for submit; gRPC inactive"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/grpc/CancelOrder": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "Ordinary HTTP alias for cancel"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/grpc/GetOrderStatus/{orderId}": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Ordinary HTTP alias for status"
+          },
+          "400": {
+            "description": "Invalid request"
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "/health": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Health and process/transport capabilities; process degradation returns 503"
+          }
+        }
+      }
+    },
+    "/runtime": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Actual application process identity"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Prometheus operational counters"
+          }
+        }
+      }
+    }
+  }
+}

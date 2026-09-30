@@ -20,17 +20,17 @@ The old committed results were removed because they mixed smoke traffic with har
 |---|---|---:|---|
 | 00 | Runtime compatibility | 1 | Deterministic Java 8-bytecode sort/compress/hash workload; `benchctl` builds one JAR and records/reuses its SHA-256 digest across runtimes. |
 | 01 | Fintech ledger | 2 | Real H2/Hikari transactions, isolated process identity, balance-conservation checks, application-process JFR/GC/NMT/CPU/RSS telemetry, open-loop HdrHistogram load and statistical gates. |
-| 02 | Microservices mesh | 1 | Multiple HTTP servers, but all services share one JVM/process. |
+| 02 | Microservices mesh | 1 | Gateway plus three independent service JVMs; actual account/transaction/notification HTTP calls and child identity/readiness/cleanup checks. |
 | 03 | Streaming analytics | 1 | In-memory queue/window processor; no real broker/state backend. |
 | 04 | Vector/FFM inference | 1 | JDK 21 preview Vector API and FFM paths with scalar/SIMD equivalence smoke checks. |
 | 05 | Dynamic/polyglot service | 1 | Rhino execution prototype; not a cross-runtime OpenJDK feature lane. |
-| 06 | Massive chat | 0 | Subscriber-aware HTTP room simulator; deliveries are explicitly simulated and persistent connection count is zero. |
+| 06 | Massive chat | 1 | Persistent virtual-thread TCP subscriptions and room fan-out; bounded outbound queues, real socket delivery counters and disconnect cleanup. |
 | 07 | Cold start | 1 | Isolated child-process time-to-health with runtime-token verification; no complete CDS/AppCDS matrix. |
 | 08 | ETL batch | 1 | Real local NIO pipeline; lacks reference digests and Tier 2 telemetry. |
 | 09 | ONNX inference | 0 | Truthful deterministic Java fallback; never reports ONNX active without a real session. |
-| 10 | Microservices fleet | 0 | Single-process service simulation; not independently restartable JVM fleet. |
-| 11 | Autoscaling burst | 0 | Local thread-pool simulation; not process/Kubernetes capacity scaling. |
-| 12 | HFT gateway | 0 | Correct synthetic symbol-isolated partial-fill engine over HTTP; not gRPC and not a market-data stack. |
+| 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
+| 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
+| 12 | HFT gateway | 1 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP and persistent framed TCP; gRPC remains inactive. |
 | 13 | Large monolith | 0 | Creates 500 distinct generated proxy classes and labels JIT compilation time correctly; still not an enterprise monolith. |
 
 ## Foundation delivered
@@ -55,5 +55,5 @@ The old committed results were removed because they mixed smoke traffic with har
 
 1. Produce measurement-valid ledger result sets on controlled hardware (current CI is not a quiet machine).
 2. Port the shared measurement engine from benchmark 01 to other workloads only after their claimed architecture exists.
-3. Implement real gRPC for HFT, real ONNX sessions, multi-process mesh/fleet, and persistent-connection chat before any further promotions.
+3. Implement real gRPC for HFT and real ONNX sessions; add workload-specific correctness and shared measurement integration before Tier 2 promotion.
 4. Keep publication claims out of documentation until a Tier 3 controlled-environment run exists.

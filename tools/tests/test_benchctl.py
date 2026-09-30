@@ -107,6 +107,23 @@ class BenchctlTests(unittest.TestCase):
         }
         self.assertEqual([], benchctl_entry.validate_result_document(aggregate))
 
+    def test_modern_smoke_keeps_actual_application_metadata_without_legacy_warnings(self):
+        raw = {
+            "schema_version": "1.0.0", "run_kind": "smoke", "implementation_tier": "tier-1",
+            "measurement_valid": False, "invalid_reasons": ["functional_smoke_only"],
+            "warnings": ["Functional smoke only"], "kpis": None,
+            "application_runtime": {"pid": 123, "java_version": "21.0.12", "collectors": ["Copy", "MarkSweepCompact"],
+                                    "jvm_args": ["-XX:+UseSerialGC"]},
+            "runtime": "21.0.12", "gc": ["Copy", "MarkSweepCompact"], "jvm_flags": ["-XX:+UseSerialGC"],
+        }
+        item = {"tier": "tier-1", "runtime": "jdk21", "gc": "serial", "gc_flags": ["-XX:+UseSerialGC"]}
+        result = benchctl.enrich_smoke_result(raw, item, "run", 123)
+        result = benchctl_entry._sanitize_legacy_result(result)
+        self.assertEqual(result['runtime'], '21.0.12')
+        self.assertEqual(result['gc'], ['Copy', 'MarkSweepCompact'])
+        self.assertEqual(result['invalid_reasons'], ['functional_smoke_only'])
+        self.assertFalse(any('legacy' in warning.lower() for warning in result['warnings']))
+
 
 if __name__ == "__main__":
     unittest.main()
