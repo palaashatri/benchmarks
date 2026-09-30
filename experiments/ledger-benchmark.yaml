@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "run_kind": "benchmark",
+  "workloads": ["01-fintech-ledger"],
+  "runtimes": [21],
+  "gcs": ["g1"],
+  "repetitions": 5,
+  "requests": 100,
+  "threads": 16,
+  "target_rate": 80,
+  "warmup_seconds": 8,
+  "measure_seconds": 12,
+  "heap_mb": 512
+}

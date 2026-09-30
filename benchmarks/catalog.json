@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "workloads": [
     {"id":"00-runtime-compatibility","path":"benchmarks/00-runtime-compatibility","tier":"tier-1","min_jdk":8,"max_jdk":25,"status":"one hashed Java 8 artifact reused across runtime smoke runs"},
-    {"id":"01-fintech-ledger","path":"benchmarks/01-fintech-ledger","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"functional prototype; measurement telemetry invalid"},
+    {"id":"01-fintech-ledger","path":"benchmarks/01-fintech-ledger","tier":"tier-2","min_jdk":21,"max_jdk":25,"status":"reference Tier 2 workload; application-process telemetry, open-loop load and statistical gates; individual runs remain invalid until those gates pass"},
     {"id":"02-microservices-mesh","path":"benchmarks/02-microservices-mesh","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"single-JVM service-mesh prototype"},
     {"id":"03-streaming-analytics","path":"benchmarks/03-streaming-analytics","tier":"tier-1","min_jdk":21,"max_jdk":25,"status":"in-memory queue/window prototype"},
     {"id":"04-ml-inference-panama-vector","path":"benchmarks/04-ml-inference-panama-vector","tier":"tier-1","min_jdk":21,"max_jdk":21,"status":"JDK 21 preview Vector/FFM prototype"},

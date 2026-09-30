@@ -20,4 +20,4 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile and self-test open-loop HdrHistogram generator
-        run: tools/loadgen/run.sh test
+        run: bash tools/loadgen/run.sh test
