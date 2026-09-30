@@ -57,7 +57,7 @@ Shared measurement infrastructure must be implemented once, not copied across 13
 
 ## Workload policy
 
-Keep current implementations as Tier 0/Tier 1 prototypes until evidence supports promotion. Complete benchmark 01 as the reference Tier 2 workload before cloning measurement patterns elsewhere. Production-shaped implementations must exercise the behaviour they claim: real gRPC for HFT, real ONNX sessions for ONNX, separate processes for fleet/mesh claims, persistent connections for massive chat, and a real broad class graph for the monolith.
+Keep current implementations as Tier 0/Tier 1 prototypes until evidence supports promotion. Benchmark 01 is the reference Tier 2 workload; clone its measurement engine only after another workload has equivalent correctness, process identity and telemetry. Production-shaped implementations must exercise the behaviour they claim: real gRPC for HFT, real ONNX sessions for ONNX, separate processes for fleet/mesh claims, persistent connections for massive chat, and a real broad class graph for the monolith.
 
 ## Build and test policy
 
@@ -69,4 +69,4 @@ Keep current implementations as Tier 0/Tier 1 prototypes until evidence supports
 
 ## Definition of done
 
-The suite is not complete until installed JDK 8–25 runtimes can be discovered, supported combinations are planned safely, benchmark 01 is Tier 2, all workloads have honest tiers and correctness tests, telemetry belongs to the application process, comparisons are statistically defensible, CI passes, and documentation matches what was actually executed.
+The suite is complete at the public OpenJDK-controller level when installed JDK 8–25 runtimes can be discovered, supported combinations are planned safely, benchmark 01 is Tier 2, all workloads have honest tiers and correctness tests, telemetry belongs to the application process, comparisons are statistically defensible, CI passes, and documentation matches what was actually executed. Publication-grade numbers still require controlled hardware and a measurement-valid result set.

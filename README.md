@@ -4,9 +4,11 @@ This repository is an OpenJDK HotSpot workload and regression suite. It contains
 
 ## Current readiness
 
-The repository is **smoke/prototype-ready**. No workload is currently Tier 2, therefore `benchctl` deliberately refuses publication-style benchmark execution. Existing throughput and latency numbers are diagnostic only until application-process telemetry, warm-up phases, open-loop load and statistical gates are implemented.
+Benchmark `01-fintech-ledger` is the reference **Tier 2** workload. `benchctl run experiments/ledger-benchmark.yaml` launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical validity gates. A passing process exit is not sufficient: `measurement_valid` remains `false` unless those gates pass.
 
-See `IMPLEMENTATION_STATUS.md` for the audited per-workload state.
+All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points verify contracts and correctness, not publication-grade performance.
+
+See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload state.
 
 ## Scope
 
@@ -29,6 +31,14 @@ See `IMPLEMENTATION_STATUS.md` for the audited per-workload state.
 ```
 
 The experiment files use JSON syntax because JSON is valid YAML and lets the controller remain dependency-free.
+
+Measurement of the reference ledger workload:
+
+```bash
+./benchctl validate experiments/ledger-benchmark.yaml
+./benchctl plan experiments/ledger-benchmark.yaml
+./benchctl run experiments/ledger-benchmark.yaml
+```
 
 The compatibility workload can also be tested directly:
 
@@ -53,7 +63,7 @@ Every normalized result carries:
 }
 ```
 
-Unknown measurements are `null`, never fake zeroes. `benchctl compare` rejects invalid results.
+Unknown measurements are `null`, never fake zeroes. `benchctl compare` rejects invalid results and treats overlapping bootstrap confidence intervals as inconclusive.
 
 ## Development checks
 
@@ -62,7 +72,9 @@ python3 -m unittest discover -s tools/tests -v
 python3 tools/check_repository.py
 ./benchctl validate experiments/quick.yaml
 ./benchctl validate experiments/standard.yaml
+./benchctl validate experiments/ledger-benchmark.yaml
 ./benchctl discover-runtimes
+bash tools/loadgen/run.sh test
 ```
 
-Workload-specific `run.sh` files remain compatibility smoke entry points. They are not authoritative benchmark orchestration.
+Workload-specific `run.sh` files remain compatibility smoke entry points. They are not authoritative benchmark orchestration except through `benchctl`.
