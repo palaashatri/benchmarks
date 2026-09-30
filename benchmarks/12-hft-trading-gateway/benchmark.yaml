@@ -1,15 +1,24 @@
 {
-  "schema_version":"1.0.0",
-  "id":"12-hft-trading-gateway",
-  "tier":"tier-0",
-  "lane":"feature",
-  "min_jdk":21,
-  "max_jdk":25,
-  "implementation":"local synthetic symbol-isolated matching engine with partial fills",
-  "transport":"http-prototype",
-  "grpc_active":false,
-  "measurement_valid":false,
-  "invalid_reasons":["real gRPC is not implemented","HdrHistogram open-loop measurement is not integrated","no external venue or market-data connectivity"],
-  "correctness_command":"cd app && ./run.sh test",
-  "operations":["POST /orders","GET /orders/{id}","DELETE /orders/{id}"]
+  "schema_version": "1.0.0",
+  "id": "12-hft-trading-gateway",
+  "tier": "tier-1",
+  "lane": "feature",
+  "min_jdk": 21,
+  "max_jdk": 25,
+  "implementation": "symbol-isolated FIFO matching engine with partial fills shared by HTTP and persistent framed TCP",
+  "transport": "http-and-framed-tcp",
+  "grpc_active": false,
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "functional smoke only",
+    "phased open-loop measurement and application telemetry are not integrated",
+    "real gRPC is not implemented",
+    "no external venue or market-data connectivity"
+  ],
+  "correctness_command": "cd app && ./run.sh test",
+  "operations": [
+    "POST /orders",
+    "GET /orders/{id}",
+    "DELETE /orders/{id}"
+  ]
 }

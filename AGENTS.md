@@ -70,3 +70,21 @@ Keep current implementations as Tier 0/Tier 1 prototypes until evidence supports
 ## Definition of done
 
 The suite is complete at the public OpenJDK-controller level when installed JDK 8–25 runtimes can be discovered, supported combinations are planned safely, benchmark 01 is Tier 2, all workloads have honest tiers and correctness tests, telemetry belongs to the application process, comparisons are statistically defensible, CI passes, and documentation matches what was actually executed. Publication-grade numbers still require controlled hardware and a measurement-valid result set.
+
+## PR 5 workload architecture completion
+
+Intent: finish the executable architectures promised by PR 5 while preserving the existing external HTTP contracts and OpenJDK-only boundary. These workloads remain Tier 1: this change does not add multi-process measurement orchestration, ONNX, grpc-java, or Kubernetes.
+
+Shared application utilities belong in `benchmarks/common`: JSON encoding, process identity/port publication, an owned child-JVM lifecycle, and bounded persistent TCP sessions. They must compile on Java 17 and never import harness code. Each workload keeps its own application state. All listeners bind loopback; children use the parent's Java executable and independently bound ephemeral ports. Child readiness must verify PID, unique run token, and role. Failed startup, redeploy and parent shutdown must reap owned children and delete their temporary readiness artifacts. Child heap sizing is explicit and child flags are reported; Tier 1 traffic is not a runtime performance comparison.
+
+Implementation plan (executed in this PR):
+
+- [x] Shared lifecycle: tests for inherited PORT, failed readiness, malformed/wrong process identity, cleanup and concurrent launches; implement common utilities and wire all five build entry points.
+- [x] Mesh: gateway plus account, transaction and notification JVMs; verify three distinct child PIDs, actual inter-service transactions/events, failure health and parent cleanup.
+- [x] Fleet: five replica JVMs with inventory state and independent readiness; publish a ready replacement before retiring the old generation; verify one replica's PID changes and other replicas remain available.
+- [x] Autoscaling: bounded gateway admission and queued work dispatched to real replicas; automatic scale-up from backlog and idle scale-down without losing accepted work; verify process count, completion, bounds and shutdown.
+- [x] Chat: virtual-thread sessions, newline-framed JSON, room subscriptions, persistent delivery, bounded outbound queues and disconnect cleanup; verify isolation, repeated messages, malformed frames and actual socket deliveries.
+- [x] Trading: persistent newline-framed JSON SubmitOrder/CancelOrder/GetOrderStatus sharing the HTTP order book; verify symbol isolation, partial fills, ordering, invalid frames and transport metadata. gRPC remains inactive.
+- [x] Integration: align catalog, manifests, contracts, implementation notes and CI; run controller tests, repository hygiene, manifest checks, lifecycle tests and workload correctness on supported JDKs; review and push to PR 5.
+
+Review focus: partial startup after an earlier child becomes ready; an inherited fixed PORT; child death during traffic; simultaneous fleet deploys; slow/disconnected TCP readers and oversized frames. Tests must exercise real process/socket behavior, with bounded waits and unconditional cleanup.

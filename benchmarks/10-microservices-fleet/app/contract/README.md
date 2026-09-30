@@ -1,8 +1,10 @@
-# Microservices Fleet contract
+# 10-microservices-fleet external contract
 
-External surfaces used by the harness only.
+See `openapi.yaml` for the actual HTTP paths.
 
-Required operations:
-- GET /api/v1/products/{id}
-- POST /api/v1/orders
-- GET /api/v1/orders/{id}
+The gateway owns five replica JVMs, each exposing generation-specific inventory state. Deploys for one replica are serialized. A replacement must pass the owned-process readiness handshake before it becomes routable; the previous process is then reaped. Other replicas remain available during redeployment. Failed replacement startup preserves the current replica. Requests already using the retired process can fail during replacement; no retry or drain protocol is claimed. Catalog/orders remain synthetic gateway compatibility endpoints.
+Children use the parent's Java executable, unique readiness tokens and independently assigned ports. Readiness verifies PID, token and service role. A failed start is reaped and its temporary directory removed. Parent shutdown closes all owned children; EOF on the parent's stdin pipe also terminates children after forced parent exit. Child heaps are explicitly 16–128 MiB; parent tool-option variables are removed to avoid inherited debug ports and output-file collisions. Child flags/collectors can differ from the gateway; there is no multi-process performance comparison in this prototype.
+
+All listeners bind `127.0.0.1`. `PORT=0` selects an independently bound ephemeral HTTP port; `/runtime` reports PID, role, run token, Java version, executable, actual collector names and JVM arguments. `BENCH_PORT_FILE` is published after startup. Run `cd app && ./run.sh test` for external process/socket correctness checks and `cd harness && ./run.sh test` for smoke-result identity checks.
+
+These are Tier 1 functional prototypes. The shared harness accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.

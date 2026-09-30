@@ -8,6 +8,8 @@ Benchmark `01-fintech-ledger` is the reference **Tier 2** workload. `benchctl ru
 
 All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points verify contracts and correctness, not publication-grade performance.
 
+Workloads 02, 06, 10, 11 and 12 now exercise independent JVMs or persistent TCP sessions. Their shared functional harness records actual application identity and leaves performance KPIs unavailable.
+
 See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload state.
 
 ## Scope
@@ -75,6 +77,7 @@ python3 tools/check_repository.py
 ./benchctl validate experiments/ledger-benchmark.yaml
 ./benchctl discover-runtimes
 bash tools/loadgen/run.sh test
+bash tools/workload_tests/run_common.sh
 ```
 
 Workload-specific `run.sh` files remain compatibility smoke entry points. They are not authoritative benchmark orchestration except through `benchctl`.
