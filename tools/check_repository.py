@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -40,6 +41,11 @@ def main() -> int:
             for term in FORBIDDEN_PUBLIC_TERMS:
                 if term.lower() in text.lower():
                     failures.append(f"out-of-scope public term {term!r} found in {rel}")
+    loadgen = ROOT / "tools" / "loadgen" / "run.sh"
+    if loadgen.exists() and not os.access(loadgen, os.X_OK):
+        # Workflows invoke this file with bash, so a missing execute bit is
+        # recorded as a warning rather than a hard failure.
+        print(f"WARN tools/loadgen/run.sh is not executable; CI invokes it via bash")
     for manifest in (ROOT / "experiments").glob("*.yaml"):
         try:
             data = json.loads(manifest.read_text())

@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile controller modules
-        run: python3 -m py_compile tools/benchctl.py tools/benchctl_entry.py tools/check_repository.py
+        run: python3 -m py_compile tools/benchctl.py tools/benchctl_entry.py tools/check_repository.py tools/run_ledger_experiment.py tools/telemetry.py
       - name: Unit tests
         run: python3 -m unittest discover -s tools/tests -v
       - name: Repository hygiene
@@ -26,6 +26,7 @@ jobs:
           ./benchctl validate experiments/quick.yaml
           ./benchctl validate experiments/standard.yaml
           ./benchctl validate experiments/gc-focused.yaml
+          ./benchctl validate experiments/ledger-benchmark.yaml
 
   runtime-discovery:
     strategy:
@@ -84,6 +85,12 @@ jobs:
         run: |
           (cd benchmarks/01-fintech-ledger/app && ./run.sh test)
           (cd benchmarks/01-fintech-ledger/harness && ./run.sh test)
+      - name: Mesh, streaming, polyglot and ETL contracts
+        run: |
+          (cd benchmarks/02-microservices-mesh/app && ./run.sh test)
+          (cd benchmarks/03-streaming-analytics/app && ./run.sh test)
+          (cd benchmarks/05-polyglot-service/app && ./run.sh test)
+          (cd benchmarks/08-etl-batch/app && ./run.sh test)
       - name: Vector and FFM equivalence
         run: cd benchmarks/04-ml-inference-panama-vector/app && ./run.sh test
       - name: Chat simulator semantics
@@ -92,6 +99,10 @@ jobs:
         run: cd benchmarks/07-coldstart-suite/app && ./run.sh test
       - name: Inference mode truthfulness
         run: cd benchmarks/09-onnx-inference/app && ./run.sh test
+      - name: Fleet and burst simulation honesty
+        run: |
+          (cd benchmarks/10-microservices-fleet/app && ./run.sh test)
+          (cd benchmarks/11-autoscaling-burst/app && ./run.sh test)
       - name: Synthetic gateway invariants
         run: cd benchmarks/12-hft-trading-gateway/app && ./run.sh test
       - name: Monolith class surface
