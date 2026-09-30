@@ -1,0 +1,15 @@
+{
+  "schema_version":"1.0.0",
+  "id":"12-hft-trading-gateway",
+  "tier":"tier-0",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"local synthetic symbol-isolated matching engine with partial fills",
+  "transport":"http-prototype",
+  "grpc_active":false,
+  "measurement_valid":false,
+  "invalid_reasons":["real gRPC is not implemented","HdrHistogram open-loop measurement is not integrated","no external venue or market-data connectivity"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /orders","GET /orders/{id}","DELETE /orders/{id}"]
+}

@@ -1,0 +1,30 @@
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.serena/
+
+# Java build outputs and downloaded dependencies
+**/build/
+**/target/
+**/.gradle/
+**/*.class
+**/*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# Benchmark/runtime artifacts
+results/
+**/results/
+**/run-artifacts/
+**/*.jfr
+**/*.hprof
+**/*.pid
+**/*.log
+
+# Local controller state and secrets
+.benchctl/
+.env
+.env.*
+private-config/
+local-secrets/

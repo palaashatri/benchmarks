@@ -1,0 +1,13 @@
+{
+  "schema_version":"1.0.0",
+  "id":"13-large-monolith",
+  "tier":"tier-0",
+  "lane":"feature",
+  "min_jdk":17,
+  "max_jdk":25,
+  "implementation":"500 distinct generated proxy classes and deterministic component traversal",
+  "measurement_valid":false,
+  "invalid_reasons":["not a real dependency-injection monolith","no persistence mappings or restart distribution"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["GET /api/v1/monolith/work","GET /api/v1/monolith/warmup/status"]
+}

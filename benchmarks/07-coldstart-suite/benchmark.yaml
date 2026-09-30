@@ -1,0 +1,13 @@
+{
+  "schema_version":"1.0.0",
+  "id":"07-coldstart-suite",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"isolated child JVM process-to-health measurement using the selected Java executable",
+  "measurement_valid":false,
+  "invalid_reasons":["CDS and AppCDS experiment matrix is not implemented","process launch noise is not statistically controlled"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/coldstart/measure","GET /api/v1/jfr/stats"]
+}

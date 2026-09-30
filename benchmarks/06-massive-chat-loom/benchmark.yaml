@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"06-massive-chat-loom",
+  "tier":"tier-0",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"virtual-thread HTTP room simulator with subscriber-aware simulated delivery counts",
+  "persistent_connections":false,
+  "measurement_valid":false,
+  "invalid_reasons":["no persistent socket connections","deliveries are simulated rather than transmitted"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /rooms/{id}/subscribers","POST /rooms/{id}/messages","GET /rooms/{id}/messages"]
+}

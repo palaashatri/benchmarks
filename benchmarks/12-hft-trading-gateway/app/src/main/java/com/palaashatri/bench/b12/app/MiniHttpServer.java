@@ -7,305 +7,348 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
+import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * HFT Trading Gateway — HTTP facade over an in-memory order book.
+ * Deterministic, local-only matching-engine benchmark prototype.
  *
- * Routes (matching the harness contract):
- *   POST /orders                       — submit order, returns {"order_id":"...","accepted":true}
- *   DELETE /orders/{id}                — cancel order
- *   GET  /orders/{id}                  — order status
- *   POST /grpc/SubmitOrder             — legacy route (same logic)
- *   POST /grpc/CancelOrder             — legacy route
- *   GET  /grpc/GetOrderStatus/{id}     — legacy route
- *   GET  /health
- *   GET  /metrics
+ * This is synthetic JVM workload code. It has no external venue connectivity,
+ * account handling, market-data feed, or ability to place real transactions.
+ * The transport is HTTP and the workload remains Tier 0 until real gRPC and a
+ * coordinated-omission-safe histogram harness are implemented.
  */
 public final class MiniHttpServer {
+    enum Side { BUY, SELL }
+    enum Status { OPEN, PARTIALLY_FILLED, FILLED, CANCELLED }
 
-    /* ------------------------------------------------------------------ order book */
-
-    /**
-     * Immutable order record (acts as value-type equivalent — no mutability on hot path).
-     * Using a plain record here; the real value-class experiment requires --enable-preview
-     * and a JDK 25 preview build.
-     */
     record Order(
             String id,
             String symbol,
-            String side,          // "BUY" | "SELL"
-            long quantity,
+            Side side,
+            long originalQuantity,
+            long remainingQuantity,
             long priceNanos,
-            long timestamp,
-            String status         // ACCEPTED | FILLED | CANCELLED | REJECTED
-    ) {}
+            long sequence,
+            Status status
+    ) { }
 
-    /** Thread-safe, price-time priority order book. */
-    static final class OrderBook {
-        // bids: highest price first, then earliest timestamp
-        private final PriorityQueue<Order> bids = new PriorityQueue<>(
-                Comparator.<Order>comparingLong(o -> -o.priceNanos())
-                          .thenComparingLong(Order::timestamp));
-        // asks: lowest price first, then earliest timestamp
-        private final PriorityQueue<Order> asks = new PriorityQueue<>(
+    static final class SymbolBook {
+        final PriorityQueue<Order> bids = new PriorityQueue<>(
                 Comparator.<Order>comparingLong(Order::priceNanos)
-                          .thenComparingLong(Order::timestamp));
+                        .reversed()
+                        .thenComparingLong(Order::sequence));
+        final PriorityQueue<Order> asks = new PriorityQueue<>(
+                Comparator.<Order>comparingLong(Order::priceNanos)
+                        .thenComparingLong(Order::sequence));
+    }
 
-        private final ConcurrentHashMap<String, Order> orders = new ConcurrentHashMap<>();
-        private final AtomicLong idGen = new AtomicLong(1);
-        final AtomicLong matchedPairs = new AtomicLong();
-        final AtomicLong rejectedOrders = new AtomicLong();
+    static final class OrderBook {
+        private final Map<String, SymbolBook> symbols = new ConcurrentHashMap<>();
+        private final Map<String, Order> orders = new ConcurrentHashMap<>();
+        private final AtomicLong idSequence = new AtomicLong(1);
+        private final AtomicLong arrivalSequence = new AtomicLong(1);
+        final AtomicLong matchEvents = new AtomicLong();
+        final AtomicLong filledQuantity = new AtomicLong();
+        final AtomicLong rejected = new AtomicLong();
 
-        /** Submit a new order; returns the ack JSON. */
-        synchronized String submit(String symbol, String side, long quantity, long priceNanos) {
-            if (quantity <= 0 || priceNanos <= 0 || quantity > 10_000_000) {
-                rejectedOrders.incrementAndGet();
-                return "{\"order_id\":\"\",\"accepted\":false,\"reason\":\"INVALID_PARAMS\"}";
+        String submit(String symbolValue, String sideValue, long quantity, long priceNanos) {
+            String symbol = symbolValue == null ? "" : symbolValue.trim().toUpperCase();
+            Side side;
+            try {
+                side = Side.valueOf(sideValue == null ? "" : sideValue.trim().toUpperCase());
+            } catch (IllegalArgumentException exception) {
+                rejected.incrementAndGet();
+                return rejection("INVALID_SIDE");
             }
-            String id = "ord-" + idGen.getAndIncrement();
-            Order order = new Order(id, symbol, side.toUpperCase(), quantity, priceNanos,
-                    System.nanoTime(), "ACCEPTED");
-            orders.put(id, order);
-            if ("BUY".equals(order.side())) bids.offer(order);
-            else asks.offer(order);
-            tryMatch();
-            return "{\"order_id\":\"" + id + "\",\"accepted\":true,\"reason\":\"\"}";
+            if (symbol.isBlank() || quantity <= 0 || quantity > 10_000_000 || priceNanos <= 0) {
+                rejected.incrementAndGet();
+                return rejection("INVALID_PARAMS");
+            }
+
+            SymbolBook book = symbols.computeIfAbsent(symbol, ignored -> new SymbolBook());
+            synchronized (book) {
+                String id = "ord-" + idSequence.getAndIncrement();
+                Order order = new Order(
+                        id,
+                        symbol,
+                        side,
+                        quantity,
+                        quantity,
+                        priceNanos,
+                        arrivalSequence.getAndIncrement(),
+                        Status.OPEN);
+                orders.put(id, order);
+                queue(book, order).offer(order);
+                match(book);
+                return "{\"order_id\":\"" + id + "\",\"accepted\":true}";
+            }
         }
 
-        /** Cancel an existing order. */
-        synchronized String cancel(String orderId) {
-            Order o = orders.get(orderId);
-            if (o == null) return "{\"order_id\":\"" + escape(orderId) + "\",\"accepted\":false,\"reason\":\"NOT_FOUND\"}";
-            if ("FILLED".equals(o.status()) || "CANCELLED".equals(o.status()))
-                return "{\"order_id\":\"" + escape(orderId) + "\",\"accepted\":false,\"reason\":\"ALREADY_" + o.status() + "\"}";
-            Order cancelled = new Order(o.id(), o.symbol(), o.side(), o.quantity(),
-                    o.priceNanos(), o.timestamp(), "CANCELLED");
-            orders.put(orderId, cancelled);
-            bids.remove(o);
-            asks.remove(o);
-            return "{\"order_id\":\"" + escape(orderId) + "\",\"accepted\":true,\"reason\":\"\"}";
-        }
-
-        /** Get the status of an order. */
-        String status(String orderId) {
-            Order o = orders.get(orderId);
-            if (o == null) return "{\"order_id\":\"" + escape(orderId) + "\",\"status\":\"UNKNOWN\"}";
-            return "{\"order_id\":\"" + escape(o.id()) + "\",\"status\":\"" + o.status()
-                    + "\",\"symbol\":\"" + escape(o.symbol()) + "\",\"side\":\"" + o.side()
-                    + "\",\"quantity\":" + o.quantity() + ",\"price_nanos\":" + o.priceNanos() + "}";
-        }
-
-        long orderCount() { return orders.size(); }
-
-        /** Attempt to match top-of-book bids vs asks (price-crossing). */
-        private void tryMatch() {
-            while (!bids.isEmpty() && !asks.isEmpty()) {
-                Order bid = bids.peek();
-                Order ask = asks.peek();
-                // A bid crosses the ask if bid price >= ask price
-                if (bid.priceNanos() >= ask.priceNanos()) {
-                    bids.poll();
-                    asks.poll();
-                    orders.put(bid.id(), new Order(bid.id(), bid.symbol(), bid.side(),
-                            bid.quantity(), bid.priceNanos(), bid.timestamp(), "FILLED"));
-                    orders.put(ask.id(), new Order(ask.id(), ask.symbol(), ask.side(),
-                            ask.quantity(), ask.priceNanos(), ask.timestamp(), "FILLED"));
-                    matchedPairs.incrementAndGet();
-                } else {
-                    break;
+        String cancel(String id) {
+            Order current = orders.get(id);
+            if (current == null) {
+                return "{\"order_id\":\"" + escape(id)
+                        + "\",\"accepted\":false,\"reason\":\"NOT_FOUND\"}";
+            }
+            SymbolBook book = symbols.get(current.symbol());
+            synchronized (book) {
+                current = orders.get(id);
+                if (current.status() == Status.FILLED || current.status() == Status.CANCELLED) {
+                    return "{\"order_id\":\"" + escape(id)
+                            + "\",\"accepted\":false,\"reason\":\"ALREADY_"
+                            + current.status() + "\"}";
                 }
+                queue(book, current).remove(current);
+                orders.put(id, replace(current, current.remainingQuantity(), Status.CANCELLED));
+                return "{\"order_id\":\"" + escape(id) + "\",\"accepted\":true}";
             }
+        }
+
+        String status(String id) {
+            Order order = orders.get(id);
+            if (order == null) {
+                return "{\"order_id\":\"" + escape(id) + "\",\"status\":\"UNKNOWN\"}";
+            }
+            return "{\"order_id\":\"" + escape(order.id())
+                    + "\",\"symbol\":\"" + escape(order.symbol())
+                    + "\",\"side\":\"" + order.side()
+                    + "\",\"status\":\"" + order.status()
+                    + "\",\"original_quantity\":" + order.originalQuantity()
+                    + ",\"remaining_quantity\":" + order.remainingQuantity()
+                    + ",\"price_nanos\":" + order.priceNanos() + "}";
+        }
+
+        private void match(SymbolBook book) {
+            while (!book.bids.isEmpty() && !book.asks.isEmpty()) {
+                Order bid = book.bids.peek();
+                Order ask = book.asks.peek();
+                if (bid.priceNanos() < ask.priceNanos()) {
+                    return;
+                }
+                book.bids.poll();
+                book.asks.poll();
+                long fill = Math.min(bid.remainingQuantity(), ask.remainingQuantity());
+                bid = afterFill(bid, fill);
+                ask = afterFill(ask, fill);
+                orders.put(bid.id(), bid);
+                orders.put(ask.id(), ask);
+                if (bid.remainingQuantity() > 0) {
+                    book.bids.offer(bid);
+                }
+                if (ask.remainingQuantity() > 0) {
+                    book.asks.offer(ask);
+                }
+                matchEvents.incrementAndGet();
+                filledQuantity.addAndGet(fill);
+            }
+        }
+
+        private static Order afterFill(Order order, long fill) {
+            long remaining = order.remainingQuantity() - fill;
+            return replace(
+                    order,
+                    remaining,
+                    remaining == 0 ? Status.FILLED : Status.PARTIALLY_FILLED);
+        }
+
+        private static Order replace(Order order, long remaining, Status status) {
+            return new Order(
+                    order.id(),
+                    order.symbol(),
+                    order.side(),
+                    order.originalQuantity(),
+                    remaining,
+                    order.priceNanos(),
+                    order.sequence(),
+                    status);
+        }
+
+        private static PriorityQueue<Order> queue(SymbolBook book, Order order) {
+            return order.side() == Side.BUY ? book.bids : book.asks;
+        }
+
+        private static String rejection(String reason) {
+            return "{\"order_id\":\"\",\"accepted\":false,\"reason\":\""
+                    + reason + "\"}";
         }
     }
 
-    /* ------------------------------------------------------------------ server */
-
     private final String benchmark;
-    @SuppressWarnings("unused")
-    private final String title;
-
-    private final OrderBook book = new OrderBook();
+    private final OrderBook orderBook = new OrderBook();
     private final AtomicLong requests = new AtomicLong();
-    /** Cumulative sum of per-request wire latency in nanoseconds. */
-    private final AtomicLong wireLatencyNsTotal = new AtomicLong();
-    private final AtomicLong ordersTotal = new AtomicLong();
+    private final AtomicLong submitted = new AtomicLong();
+    private final AtomicLong submitDurationNs = new AtomicLong();
 
-    public MiniHttpServer(String benchmark, String title) {
+    public MiniHttpServer(String benchmark, String ignoredTitle) {
         this.benchmark = benchmark;
-        this.title = title;
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 512);
-        server.createContext("/health",           this::health);
-        server.createContext("/metrics",          this::metrics);
-        server.createContext("/actuator/health",  this::health);
-        server.createContext("/actuator/prometheus", this::metrics);
-        server.createContext("/orders",           this::ordersRoute);
-        server.createContext("/grpc/SubmitOrder", this::submitOrderRoute);
-        server.createContext("/grpc/CancelOrder", this::cancelOrderRoute);
-        server.createContext("/grpc/GetOrderStatus/", this::getOrderStatusRoute);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 512);
+        server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
+        server.createContext("/metrics", this::metrics);
+        server.createContext("/orders", this::orders);
+        server.createContext("/grpc/SubmitOrder", this::legacySubmit);
+        server.createContext("/grpc/CancelOrder", this::legacyCancel);
+        server.createContext("/grpc/GetOrderStatus/", this::legacyStatus);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        log("started", "\"port\":" + port);
+        System.out.printf(
+                "{\"event\":\"started\",\"benchmark\":\"%s\","
+                        + "\"transport\":\"http-prototype\",\"port\":%d,\"pid\":%d}%n",
+                benchmark,
+                port,
+                ProcessHandle.current().pid());
     }
 
-    /* ------------------------------------------------------------------ handlers */
-
-    private void health(HttpExchange ex) throws IOException {
-        json(ex, 200, "{\"status\":\"UP\",\"benchmark\":\"" + benchmark
-                + "\",\"orders_total\":" + ordersTotal.get()
-                + ",\"matched_pairs\":" + book.matchedPairs.get() + "}");
+    private void health(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"status\":\"UP\",\"transport\":\"http-prototype\","
+                        + "\"grpc_active\":false}");
     }
 
-    private void metrics(HttpExchange ex) throws IOException {
-        long total = ordersTotal.get();
-        long latNs = wireLatencyNsTotal.get();
-        String body =
-                "# TYPE gateway_orders_total counter\n"
-                + "gateway_orders_total " + total + "\n"
-                + "# TYPE gateway_matched_pairs_total counter\n"
-                + "gateway_matched_pairs_total " + book.matchedPairs.get() + "\n"
-                + "# TYPE gateway_wire_latency_ns_total counter\n"
-                + "gateway_wire_latency_ns_total " + latNs + "\n"
-                + "# TYPE gateway_reject_count_total counter\n"
-                + "gateway_reject_count_total " + book.rejectedOrders.get() + "\n"
-                + "# TYPE jvm_available_processors gauge\n"
-                + "jvm_available_processors " + Runtime.getRuntime().availableProcessors() + "\n"
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"pid\":" + ProcessHandle.current().pid()
+                        + ",\"run_token\":\""
+                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
+                        + "\",\"java_version\":\""
+                        + escape(System.getProperty("java.version")) + "\"}");
+    }
+
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE gateway_orders_submitted_total counter\n"
+                + "gateway_orders_submitted_total " + submitted.get() + "\n"
+                + "# TYPE gateway_match_events_total counter\n"
+                + "gateway_match_events_total " + orderBook.matchEvents.get() + "\n"
+                + "# TYPE gateway_filled_quantity_total counter\n"
+                + "gateway_filled_quantity_total " + orderBook.filledQuantity.get() + "\n"
+                + "# TYPE gateway_submit_duration_seconds_sum counter\n"
+                + "gateway_submit_duration_seconds_sum "
+                + format(submitDurationNs.get() / 1_000_000_000.0) + "\n"
+                + "# TYPE gateway_rejected_total counter\n"
+                + "gateway_rejected_total " + orderBook.rejected.get() + "\n"
+                + "# TYPE gateway_grpc_active gauge\n"
+                + "gateway_grpc_active 0\n"
                 + "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} "
+                + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
     }
 
-    /**
-     * /orders route — handles POST (submit) and sub-paths for DELETE/GET.
-     * Also handles /orders/{id} for GET and DELETE.
-     */
-    private void ordersRoute(HttpExchange ex) throws IOException {
-        long t0 = System.nanoTime();
+    private void orders(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();
-
-        try {
-            if ("POST".equalsIgnoreCase(method) && "/orders".equals(path)) {
-                String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                String symbol = field(body, "symbol", "UNKNOWN");
-                String side   = field(body, "side", "BUY");
-                long qty      = number(body, "quantity", 100L);
-                long price    = number(body, "price_nanos", 1_500_000L);
-                ordersTotal.incrementAndGet();
-                wireLatencyNsTotal.addAndGet(System.nanoTime() - t0);
-                json(ex, 200, book.submit(symbol, side, qty, price));
+        String path = exchange.getRequestURI().getPath();
+        String method = exchange.getRequestMethod();
+        if ("POST".equalsIgnoreCase(method) && "/orders".equals(path)) {
+            submit(exchange);
+            return;
+        }
+        if (path.startsWith("/orders/")) {
+            String id = path.substring("/orders/".length());
+            if ("GET".equalsIgnoreCase(method)) {
+                json(exchange, 200, orderBook.status(id));
                 return;
             }
-            // /orders/{id}
-            if (path.startsWith("/orders/")) {
-                String id = path.substring("/orders/".length());
-                if ("DELETE".equalsIgnoreCase(method)) {
-                    json(ex, 200, book.cancel(id));
-                    return;
-                }
-                if ("GET".equalsIgnoreCase(method)) {
-                    json(ex, 200, book.status(id));
-                    return;
-                }
+            if ("DELETE".equalsIgnoreCase(method)) {
+                json(exchange, 200, orderBook.cancel(id));
+                return;
             }
-            json(ex, 404, "{\"error\":\"no route for " + escape(method) + " " + escape(path) + "\"}");
-        } finally {
-            wireLatencyNsTotal.addAndGet(System.nanoTime() - t0);
         }
+        json(exchange, 404, "{\"error\":\"not_found\"}");
     }
 
-    /** Legacy /grpc/SubmitOrder route. */
-    private void submitOrderRoute(HttpExchange ex) throws IOException {
-        long t0 = System.nanoTime();
+    private void submit(HttpExchange exchange) throws IOException {
+        long started = System.nanoTime();
+        String body = new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String response = orderBook.submit(
+                field(body, "symbol", ""),
+                field(body, "side", ""),
+                number(body, "quantity", -1),
+                number(body, "price_nanos", -1));
+        submitted.incrementAndGet();
+        json(exchange, 200, response);
+        submitDurationNs.addAndGet(System.nanoTime() - started);
+    }
+
+    private void legacySubmit(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        ordersTotal.incrementAndGet();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        String symbol = field(body, "symbol", "FOO");
-        String side   = field(body, "side", "BUY");
-        long qty      = number(body, "quantity", 100L);
-        long price    = number(body, "price_nanos", 125_000_000L);
-        wireLatencyNsTotal.addAndGet(System.nanoTime() - t0);
-        json(ex, 200, book.submit(symbol, side, qty, price));
+        submit(exchange);
     }
 
-    /** Legacy /grpc/CancelOrder route. */
-    private void cancelOrderRoute(HttpExchange ex) throws IOException {
+    private void legacyCancel(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        String id = field(body, "order_id", "");
-        json(ex, 200, book.cancel(id));
+        String body = new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        json(exchange, 200, orderBook.cancel(field(body, "order_id", "")));
     }
 
-    /** Legacy /grpc/GetOrderStatus/{id} route. */
-    private void getOrderStatusRoute(HttpExchange ex) throws IOException {
+    private void legacyStatus(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        String path = ex.getRequestURI().getPath();
-        String id = path.substring("/grpc/GetOrderStatus/".length());
-        String s = book.status(id);
-        int code = s.contains("\"UNKNOWN\"") ? 200 : 200; // always 200 for legacy compat
-        json(ex, code, s);
+        String id = exchange.getRequestURI().getPath()
+                .substring("/grpc/GetOrderStatus/".length());
+        json(exchange, 200, orderBook.status(id));
     }
-
-    /* ------------------------------------------------------------------ helpers */
 
     private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted);
-        if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length());
-        if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1);
-        if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1);
-        if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        if (at < 0) return fallback;
+        int colon = body.indexOf(':', at + key.length());
+        int start = body.indexOf('"', colon + 1);
+        int end = start < 0 ? -1 : body.indexOf('"', start + 1);
+        return colon < 0 || start < 0 || end < 0
+                ? fallback
+                : body.substring(start + 1, end);
     }
 
     private static long number(String body, String name, long fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted);
-        if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length());
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        if (at < 0) return fallback;
+        int colon = body.indexOf(':', at + key.length());
         if (colon < 0) return fallback;
         int start = colon + 1;
         while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
         int end = start;
-        while (end < body.length() && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        if (end == start) return fallback;
-        try { return Long.parseLong(body.substring(start, end)); } catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static String escape(String raw) {
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"'  -> out.append("\\\"");
-                case '\\' -> out.append("\\\\");
-                case '\n' -> out.append("\\n");
-                case '\r' -> out.append("\\r");
-                case '\t' -> out.append("\\t");
-                default   -> { if (c < 0x20) out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c)); else out.append(c); }
-            }
+        while (end < body.length()
+                && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
+        try {
+            return Long.parseLong(body.substring(start, end));
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
-        return out.toString();
     }
 
-    private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+    private static String escape(String value) {
+        return value == null
+                ? ""
+                : value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
-    private void log(String event, String fields) {
-        System.out.println("{\"event\":\"" + event + "\",\"benchmark\":\"" + benchmark + "\"," + fields + "}");
+
+    private static String format(double value) {
+        return String.format(java.util.Locale.ROOT, "%.9f", value);
+    }
+
+    private static void json(HttpExchange exchange, int status, String body)
+            throws IOException {
+        bytes(exchange, status, "application/json", body);
+    }
+
+    private static void bytes(
+            HttpExchange exchange, int status, String contentType, String body)
+            throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(payload);
+        }
     }
 }

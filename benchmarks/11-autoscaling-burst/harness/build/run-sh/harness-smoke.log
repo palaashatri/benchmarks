@@ -1,7 +1,0 @@
-{"event":"run_start","run":1,"of":3}
-{"event":"run_done","run":1,"throughput":682.924}
-{"event":"run_start","run":2,"of":3}
-{"event":"run_done","run":2,"throughput":3171.687}
-{"event":"run_start","run":3,"of":3}
-{"event":"run_done","run":3,"throughput":4524.013}
-{"benchmark":"11-autoscaling-burst","runtime":"openjdk-hotspot-17","gc":"G1","jvm_flags":["-XX:+UseG1GC"],"env":{"cpu":"12","kernel":"26.5.1","cgroup_cpu":"unknown","cgroup_mem":"unknown"},"load_profile":"flash-sale","phases":{"warmup_s":0,"measure_s":0},"kpis":{"throughput":4524.013,"p50_ms":1,"p99_ms":3,"p999_ms":3,"p9999_ms":3,"gc_pause_p99_ms":1,"alloc_rate_mb_s":0,"rss_mb":127,"native_mem_mb":0,"cpu_util_pct":35.39},"mode_kpis":{"pod_readiness_ms":0,"scale_up_s":0,"errors_rate":0.000000}}

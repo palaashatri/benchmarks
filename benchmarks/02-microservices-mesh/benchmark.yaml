@@ -1,0 +1,14 @@
+{
+  "schema_version":"1.0.0",
+  "id":"02-microservices-mesh",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"ephemeral-port HTTP account, transaction, notification and proxy servers",
+  "process_model":"single JVM with four logical servers",
+  "measurement_valid":false,
+  "invalid_reasons":["services do not run in independent JVMs","legacy harness is closed-loop"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["GET /api/v1/users/{id}","POST /api/v1/orders"]
+}

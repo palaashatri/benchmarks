@@ -1,102 +1,78 @@
 #!/usr/bin/env sh
 set -eu
 COMMAND="${1:-help}"
-if [ "$#" -gt 0 ]; then shift; fi
+[ "$#" -eq 0 ] || shift
 MAIN_CLASS="com.palaashatri.bench.b04.app.BenchmarkApp"
-JAVA_RELEASE="21"
-ROLE="app"
-DEFAULT_PORT="18004"
-SMOKE_GETS='/api/v1/health'
-SMOKE_POSTS='/api/v1/inference::{"features":[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.1,0.2,0.3,0.4,0.5,0.6]}'
 CLASSES_DIR="build/run-sh/classes"
 SOURCES_FILE="build/run-sh/sources.txt"
 
-compile_sources() {
+compile() {
   mkdir -p "$CLASSES_DIR"
-  find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
-  if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
-  javac --add-modules jdk.incubator.vector -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
+  javac --release 21 --enable-preview --add-modules jdk.incubator.vector \
+    -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 
-run_java() { compile_sources; exec java --add-modules=jdk.incubator.vector -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
-
-wait_for_health() {
-  url="$1"
-  python3 - "$url" <<'PYWAIT'
-import sys,time,urllib.request
-url=sys.argv[1]; last=None
-for _ in range(80):
-    try:
-        with urllib.request.urlopen(url, timeout=0.5) as response:
-            if response.status == 200: raise SystemExit(0)
-    except SystemExit: raise
-    except Exception as exc: last=exc
-    time.sleep(0.1)
-print(f"Timed out waiting for {url}: {last}", file=sys.stderr); raise SystemExit(1)
-PYWAIT
+run() {
+  compile
+  exec java --enable-preview --add-modules=jdk.incubator.vector \
+    -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"
 }
 
-smoke_app() {
-  compile_sources
-  port="${PORT:-$DEFAULT_PORT}"
+free_port() {
+  python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(('127.0.0.1', 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+test_app() {
+  compile
+  port="${PORT:-$(free_port)}"
   mkdir -p build/run-sh
-  java --add-modules=jdk.incubator.vector -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" > build/run-sh/app-smoke.log 2>&1 &
-  pid="$!"
-  trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-  wait_for_health "http://127.0.0.1:$port/health"
-  python3 - "$port" "$SMOKE_GETS" "$SMOKE_POSTS" <<'PYAPP'
-import sys, urllib.request
-port, gets, posts = sys.argv[1], sys.argv[2], sys.argv[3]
-base=f"http://127.0.0.1:{port}"
-for path in ["/health", "/metrics"] + [p for p in gets.split('|') if p]:
-    with urllib.request.urlopen(base + path, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-for item in [p for p in posts.split('|') if p]:
-    path, body = item.split('::', 1)
-    req = urllib.request.Request(base + path, data=body.encode(), method='POST', headers={'Content-Type':'application/json'})
-    with urllib.request.urlopen(req, timeout=2) as response:
-        if response.status != 200: raise SystemExit(f"{path} returned {response.status}")
-print(f"app smoke passed on port {port}")
-PYAPP
+  java --enable-preview --add-modules=jdk.incubator.vector \
+    -cp "$CLASSES_DIR" "$MAIN_CLASS" "$port" >build/run-sh/app-test.log 2>&1 &
+  pid=$!
+  trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
+  python3 - "$port" "$pid" <<'PY'
+import json, os, sys, time, urllib.request
+port, pid = int(sys.argv[1]), int(sys.argv[2])
+base = f'http://127.0.0.1:{port}'
+for _ in range(150):
+    try:
+        os.kill(pid, 0)
+        with urllib.request.urlopen(base + '/api/v1/health', timeout=.3) as response:
+            health = json.load(response)
+        if health['status'] == 'UP':
+            break
+    except Exception:
+        time.sleep(.1)
+else:
+    raise SystemExit('owned Vector/FFM app did not become ready')
+body = json.dumps({'features':[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,0.1,0.2,0.3,0.4,0.5,0.6]}).encode()
+def infer(path):
+    request = urllib.request.Request(base + path, data=body, method='POST', headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+scalar = infer('/api/v1/inference/scalar')
+simd = infer('/api/v1/inference')
+assert scalar['class'] == simd['class'], (scalar, simd)
+assert abs(scalar['confidence'] - simd['confidence']) < 1e-4, (scalar, simd)
+assert scalar['method'] == 'scalar' and simd['method'] == 'simd'
+print('Vector/FFM scalar-equivalence check passed')
+PY
   kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   trap - EXIT INT TERM
 }
 
-smoke_harness() {
-  compile_sources
-  mkdir -p build/run-sh
-  port="${PORT:-$DEFAULT_PORT}"
-  if [ -z "${BASE_URL:-}" ] && [ -x ../app/run.sh ]; then
-    (cd ../app && ./run.sh run "$port" > build/run-sh/harness-owned-app.log 2>&1 & echo $! > ../harness/build/run-sh/app.pid)
-    pid="$(cat build/run-sh/app.pid)"
-    trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-    wait_for_health "http://127.0.0.1:$port/health"
-    base_url="http://127.0.0.1:$port"
-  else
-    base_url="${BASE_URL:-http://127.0.0.1:$port}"
-  fi
-  requests="${REQUESTS:-4}"
-  java -cp "$CLASSES_DIR" "$MAIN_CLASS" --base-url "$base_url" --requests "$requests" --threads 8 --runs 3 --out build/run-sh/results.json > build/run-sh/harness-smoke.log
-  test -s build/run-sh/results.json
-  cat build/run-sh/results.json
-  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; trap - EXIT INT TERM; fi
-}
-
-usage() { cat <<USAGE
-Usage: ./run.sh <command> [args]
-Commands:
-  build        Compile local Java sources with javac --release $JAVA_RELEASE.
-  test         Run app endpoint smoke or live app+harness smoke.
-  run [args]   Compile and run $MAIN_CLASS with provided args.
-  clean        Remove build/run-sh artifacts.
-  help         Show this message.
-USAGE
-}
 case "$COMMAND" in
-  build) compile_sources ;;
-  test) if [ "$ROLE" = "app" ]; then smoke_app; else smoke_harness; fi ;;
-  run) run_java "$@" ;;
-  clean) rm -rf build/run-sh ;;
-  help|-h|--help) usage ;;
-  *) echo "Unknown command: $COMMAND" >&2; usage >&2; exit 2 ;;
+  build) compile ;;
+  test) test_app ;;
+  run) run "$@" ;;
+  clean) rm -rf build ;;
+  help|-h|--help) echo 'Usage: ./run.sh {build|test|run|clean}' ;;
+  *) echo "Unknown command: $COMMAND" >&2; exit 2 ;;
 esac

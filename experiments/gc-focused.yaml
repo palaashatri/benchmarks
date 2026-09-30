@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "run_kind": "calibration",
+  "workloads": ["01-fintech-ledger", "08-etl-batch"],
+  "runtimes": ["all"],
+  "gcs": ["serial", "parallel", "g1", "zgc", "shenandoah", "epsilon"],
+  "repetitions": 3,
+  "requests": 500,
+  "threads": 8
+}

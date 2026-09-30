@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "id": "00-runtime-compatibility",
+  "tier": "tier-1",
+  "lane": "compatibility",
+  "bytecode_target": 8,
+  "min_jdk": 8,
+  "max_jdk": 25,
+  "description": "Java 8 bytecode workload for cross-version OpenJDK runtime smoke comparisons"
+}

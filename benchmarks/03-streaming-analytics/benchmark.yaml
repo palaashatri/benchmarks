@@ -1,0 +1,15 @@
+{
+  "schema_version":"1.0.0",
+  "id":"03-streaming-analytics",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"bounded in-memory event-time queue and ten-second windows",
+  "state_backend":"in-memory",
+  "external_broker":false,
+  "measurement_valid":false,
+  "invalid_reasons":["no durable state backend or external broker","legacy harness is closed-loop"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/events","GET /api/v1/windows/{key}","GET /api/v1/lag"]
+}

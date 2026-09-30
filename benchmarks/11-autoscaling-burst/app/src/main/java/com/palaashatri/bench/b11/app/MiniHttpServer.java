@@ -6,21 +6,25 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedHashMap;
-import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * Single-JVM capacity-scaling simulator.
+ *
+ * This workload changes a local worker pool only. It never claims to create
+ * processes, containers, pods, or external replicas.
+ */
 public final class MiniHttpServer {
-
-    static class TokenBucket {
+    static final class TokenBucket {
         private final long capacity;
         private final long refillPerSecond;
-        private volatile long tokens;
-        private volatile long lastRefill = System.nanoTime();
+        private long tokens;
+        private long lastRefillNs = System.nanoTime();
 
         TokenBucket(long capacity, long refillPerSecond) {
             this.capacity = capacity;
@@ -30,30 +34,44 @@ public final class MiniHttpServer {
 
         synchronized boolean tryConsume() {
             refill();
-            if (tokens > 0) { tokens--; return true; }
-            return false;
+            if (tokens == 0) return false;
+            tokens--;
+            return true;
+        }
+
+        synchronized long tokens() {
+            refill();
+            return tokens;
         }
 
         private void refill() {
             long now = System.nanoTime();
-            long elapsed = now - lastRefill;
-            long toAdd = elapsed * refillPerSecond / 1_000_000_000L;
-            if (toAdd > 0) { tokens = Math.min(capacity, tokens + toAdd); lastRefill = now; }
+            long elapsed = now - lastRefillNs;
+            long added = elapsed * refillPerSecond / 1_000_000_000L;
+            if (added > 0) {
+                tokens = Math.min(capacity, tokens + added);
+                lastRefillNs = now;
+            }
         }
-
-        long getTokens() { return tokens; }
     }
 
     private final String benchmark;
-    private final TokenBucket tokenBucket = new TokenBucket(100, 500);
-    private final ThreadPoolExecutor workPool = new ThreadPoolExecutor(
-            2, 2, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<>(1000));
-    private final AtomicLong totalRequests = new AtomicLong();
-    private final AtomicLong rejectedRequests = new AtomicLong();
-    private final AtomicLong scaleUpCount = new AtomicLong();
-    private final AtomicLong requestCount = new AtomicLong();
+    private final TokenBucket tokenBucket = new TokenBucket(200, 1_000);
+    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(
+            2,
+            2,
+            60,
+            TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(1_000),
+            new ThreadPoolExecutor.AbortPolicy());
+    private final AtomicLong requests = new AtomicLong();
+    private final AtomicLong accepted = new AtomicLong();
+    private final AtomicLong completed = new AtomicLong();
+    private final AtomicLong rejected = new AtomicLong();
+    private final AtomicLong scaleUps = new AtomicLong();
+    private final AtomicLong scaleDowns = new AtomicLong();
 
-    public MiniHttpServer(String benchmark, String title) {
+    public MiniHttpServer(String benchmark, String ignoredTitle) {
         this.benchmark = benchmark;
         startMonitor();
     }
@@ -62,134 +80,197 @@ public final class MiniHttpServer {
         Thread monitor = new Thread(() -> {
             while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    Thread.sleep(500);
-                    int queueDepth = workPool.getQueue().size();
-                    if (queueDepth > 10 && workPool.getCorePoolSize() < 32) {
-                        int newSize = Math.min(32, workPool.getCorePoolSize() + 4);
-                        workPool.setCorePoolSize(newSize);
-                        workPool.setMaximumPoolSize(newSize);
-                        scaleUpCount.incrementAndGet();
+                    Thread.sleep(100);
+                    int queueDepth = workers.getQueue().size();
+                    int current = workers.getCorePoolSize();
+                    if (queueDepth > 10 && current < 32) {
+                        resize(Math.min(32, current + 4));
+                        scaleUps.incrementAndGet();
+                    } else if (queueDepth == 0 && workers.getActiveCount() <= 1 && current > 2) {
+                        resize(Math.max(2, current - 2));
+                        scaleDowns.incrementAndGet();
                     }
-                    if (queueDepth < 2 && workPool.getCorePoolSize() > 2) {
-                        int newSize = Math.max(2, workPool.getCorePoolSize() - 2);
-                        workPool.setMaximumPoolSize(newSize);
-                        workPool.setCorePoolSize(newSize);
-                    }
-                } catch (InterruptedException ie) {
+                } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    return;
                 }
             }
-        });
+        }, "local-capacity-monitor");
         monitor.setDaemon(true);
         monitor.start();
     }
 
+    private void resize(int target) {
+        synchronized (workers) {
+            int currentMaximum = workers.getMaximumPoolSize();
+            if (target > currentMaximum) {
+                workers.setMaximumPoolSize(target);
+                workers.setCorePoolSize(target);
+            } else {
+                workers.setCorePoolSize(target);
+                workers.setMaximumPoolSize(target);
+            }
+        }
+    }
+
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
         server.createContext("/health", this::health);
+        server.createContext("/runtime", this::runtime);
         server.createContext("/metrics", this::metrics);
-        server.createContext("/api/v1/catalog/search", this::handleSearch);
-        server.createContext("/api/v1/catalog/health", this::handleCatalogHealth);
-        server.createContext("/api/v1/metrics/scaling", this::handleScaling);
+        server.createContext("/api/v1/catalog/search", this::search);
+        server.createContext("/api/v1/catalog/health", this::health);
+        server.createContext("/api/v1/metrics/scaling", this::scaling);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.println("{\"event\":\"started\",\"benchmark\":\"" + benchmark + "\",\"port\":" + port + "}");
+        System.out.printf(
+                "{\"event\":\"started\",\"benchmark\":\"%s\","
+                        + "\"scaling_model\":\"single-jvm-thread-pool\","
+                        + "\"port\":%d,\"pid\":%d}%n",
+                benchmark,
+                port,
+                ProcessHandle.current().pid());
     }
 
-    private void health(HttpExchange ex) throws IOException {
-        requestCount.incrementAndGet();
-        json(ex, 200, "{\"status\":\"UP\"}");
+    private void health(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        json(exchange, 200,
+                "{\"status\":\"UP\",\"scaling_model\":\"single-jvm-thread-pool\","
+                        + "\"external_replicas\":0,\"worker_capacity\":"
+                        + workers.getCorePoolSize() + "}");
     }
 
-    private void metrics(HttpExchange ex) throws IOException {
-        requestCount.incrementAndGet();
-        long total = totalRequests.get();
-        long rejected = rejectedRequests.get();
-        String body = "catalog_requests_total " + total + "\n"
-                + "catalog_rejected_total " + rejected + "\n"
-                + "catalog_pool_size " + workPool.getCorePoolSize() + "\n"
-                + "catalog_queue_depth " + workPool.getQueue().size() + "\n"
-                + "catalog_scale_up_total " + scaleUpCount.get() + "\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requestCount.get() + "\n";
-        bytes(ex, 200, "text/plain; version=0.0.4", body);
+    private void runtime(HttpExchange exchange) throws IOException {
+        json(exchange, 200,
+                "{\"pid\":" + ProcessHandle.current().pid()
+                        + ",\"run_token\":\""
+                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
+                        + "\",\"java_version\":\""
+                        + escape(System.getProperty("java.version")) + "\"}");
     }
 
-    private void handleSearch(HttpExchange ex) throws IOException {
-        requestCount.incrementAndGet();
-        if (!"POST".equals(ex.getRequestMethod())) { json(ex, 405, "{\"error\":\"method not allowed\"}"); return; }
-        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+    private void search(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+            json(exchange, 405, "{\"error\":\"method_not_allowed\"}");
+            return;
+        }
+        String body = new String(
+                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
         String query = field(body, "query", "unknown");
-        String category = field(body, "category", "general");
-        totalRequests.incrementAndGet();
+        long workMs = Math.max(1, Math.min(500, number(body, "work_ms", 25)));
         if (!tokenBucket.tryConsume()) {
-            rejectedRequests.incrementAndGet();
-            json(ex, 429, "{\"error\":\"rate limit exceeded\",\"query\":\"" + escape(query) + "\"}");
+            rejected.incrementAndGet();
+            json(exchange, 429,
+                    "{\"accepted\":false,\"reason\":\"rate_limited\","
+                            + "\"query\":\"" + escape(query) + "\"}");
             return;
         }
         try {
-            workPool.submit(() -> {
-                try { Thread.sleep(2); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+            workers.execute(() -> {
+                try {
+                    Thread.sleep(workMs);
+                    completed.incrementAndGet();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             });
-        } catch (java.util.concurrent.RejectedExecutionException ree) {
-            rejectedRequests.incrementAndGet();
-            json(ex, 429, "{\"error\":\"pool queue full\",\"query\":\"" + escape(query) + "\"}");
-            return;
+            accepted.incrementAndGet();
+            json(exchange, 202,
+                    "{\"accepted\":true,\"completed\":false,"
+                            + "\"execution_model\":\"queued-local-work\","
+                            + "\"query\":\"" + escape(query) + "\"}");
+        } catch (RejectedExecutionException full) {
+            rejected.incrementAndGet();
+            json(exchange, 429,
+                    "{\"accepted\":false,\"reason\":\"queue_full\","
+                            + "\"query\":\"" + escape(query) + "\"}");
         }
-        json(ex, 200, "{\"query\":\"" + escape(query) + "\",\"category\":\"" + escape(category) + "\",\"results\":[],\"total\":0}");
     }
 
-    private void handleCatalogHealth(HttpExchange ex) throws IOException {
-        requestCount.incrementAndGet();
-        json(ex, 200, "{\"status\":\"UP\",\"pool_size\":" + workPool.getCorePoolSize()
-                + ",\"queue_depth\":" + workPool.getQueue().size()
-                + ",\"rate_limit\":500}");
+    private void scaling(HttpExchange exchange) throws IOException {
+        requests.incrementAndGet();
+        json(exchange, 200,
+                "{\"scaling_model\":\"single-jvm-thread-pool\","
+                        + "\"external_replicas\":0,"
+                        + "\"worker_capacity\":" + workers.getCorePoolSize()
+                        + ",\"active_workers\":" + workers.getActiveCount()
+                        + ",\"queue_depth\":" + workers.getQueue().size()
+                        + ",\"scale_up_count\":" + scaleUps.get()
+                        + ",\"scale_down_count\":" + scaleDowns.get()
+                        + ",\"accepted\":" + accepted.get()
+                        + ",\"completed\":" + completed.get()
+                        + ",\"rejected\":" + rejected.get()
+                        + ",\"token_bucket_tokens\":" + tokenBucket.tokens() + "}");
     }
 
-    private void handleScaling(HttpExchange ex) throws IOException {
-        requestCount.incrementAndGet();
-        json(ex, 200, "{\"core_pool_size\":" + workPool.getCorePoolSize()
-                + ",\"queue_depth\":" + workPool.getQueue().size()
-                + ",\"scale_up_count\":" + scaleUpCount.get()
-                + ",\"reject_count\":" + rejectedRequests.get()
-                + ",\"token_bucket_tokens\":" + tokenBucket.getTokens() + "}");
+    private void metrics(HttpExchange exchange) throws IOException {
+        String body = "# TYPE capacity_requests_accepted_total counter\n"
+                + "capacity_requests_accepted_total " + accepted.get() + "\n"
+                + "# TYPE capacity_requests_completed_total counter\n"
+                + "capacity_requests_completed_total " + completed.get() + "\n"
+                + "# TYPE capacity_requests_rejected_total counter\n"
+                + "capacity_requests_rejected_total " + rejected.get() + "\n"
+                + "# TYPE capacity_worker_threads gauge\n"
+                + "capacity_worker_threads " + workers.getCorePoolSize() + "\n"
+                + "# TYPE capacity_queue_depth gauge\n"
+                + "capacity_queue_depth " + workers.getQueue().size() + "\n"
+                + "# TYPE capacity_external_replicas gauge\n"
+                + "capacity_external_replicas 0\n"
+                + "# TYPE benchmark_requests_total counter\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} "
+                + requests.get() + "\n";
+        bytes(exchange, 200, "text/plain; version=0.0.4", body);
     }
 
     private static String field(String body, String name, String fallback) {
-        String quoted = "\"" + name + "\"";
-        int key = body.indexOf(quoted); if (key < 0) return fallback;
-        int colon = body.indexOf(':', key + quoted.length()); if (colon < 0) return fallback;
-        int firstQuote = body.indexOf('"', colon + 1); if (firstQuote < 0) return fallback;
-        int secondQuote = body.indexOf('"', firstQuote + 1); if (secondQuote < 0) return fallback;
-        return body.substring(firstQuote + 1, secondQuote);
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        if (at < 0) return fallback;
+        int colon = body.indexOf(':', at + key.length());
+        int start = body.indexOf('"', colon + 1);
+        int end = start < 0 ? -1 : body.indexOf('"', start + 1);
+        return colon < 0 || start < 0 || end < 0
+                ? fallback
+                : body.substring(start + 1, end);
     }
 
-    private static Map<String, String> query(String raw) {
-        Map<String, String> out = new LinkedHashMap<>(); if (raw == null || raw.isBlank()) return out;
-        for (String part : raw.split("&")) { int eq = part.indexOf('='); if (eq > 0) out.put(part.substring(0, eq), part.substring(eq + 1)); }
-        return out;
-    }
-
-    private static String escape(String raw) {
-        StringBuilder out = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            switch (c) {
-                case '"': out.append("\\\""); break;
-                case '\\': out.append("\\\\"); break;
-                case '\n': out.append("\\n"); break;
-                case '\r': out.append("\\r"); break;
-                case '\t': out.append("\\t"); break;
-                default: if (c < 0x20) out.append(String.format(java.util.Locale.ROOT, "\\u%04x", (int) c)); else out.append(c);
-            }
+    private static long number(String body, String name, long fallback) {
+        String key = "\"" + name + "\"";
+        int at = body.indexOf(key);
+        if (at < 0) return fallback;
+        int colon = body.indexOf(':', at + key.length());
+        if (colon < 0) return fallback;
+        int start = colon + 1;
+        while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
+        int end = start;
+        while (end < body.length()
+                && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
+        try {
+            return Long.parseLong(body.substring(start, end));
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
-        return out.toString();
     }
-    private static void json(HttpExchange ex, int status, String body) throws IOException { bytes(ex, status, "application/json", body); }
-    private static void bytes(HttpExchange ex, int status, String contentType, String body) throws IOException {
-        byte[] data = body.getBytes(StandardCharsets.UTF_8);
-        ex.getResponseHeaders().set("Content-Type", contentType);
-        ex.sendResponseHeaders(status, data.length);
-        try (OutputStream out = ex.getResponseBody()) { out.write(data); }
+
+    private static String escape(String value) {
+        return value == null
+                ? ""
+                : value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static void json(HttpExchange exchange, int status, String body)
+            throws IOException {
+        bytes(exchange, status, "application/json", body);
+    }
+
+    private static void bytes(
+            HttpExchange exchange, int status, String type, String body)
+            throws IOException {
+        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", type);
+        exchange.sendResponseHeaders(status, payload.length);
+        try (OutputStream output = exchange.getResponseBody()) {
+            output.write(payload);
+        }
     }
 }

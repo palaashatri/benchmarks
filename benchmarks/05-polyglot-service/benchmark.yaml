@@ -1,0 +1,15 @@
+{
+  "schema_version":"1.0.0",
+  "id":"05-polyglot-service",
+  "display_name":"dynamic-language-service",
+  "tier":"tier-1",
+  "lane":"feature",
+  "min_jdk":21,
+  "max_jdk":25,
+  "implementation":"sandboxed Rhino interpreter with bounded instructions and compilation cache",
+  "host_class_access":false,
+  "measurement_valid":false,
+  "invalid_reasons":["third-party interpreter workload is not a cross-JDK language-feature lane","legacy harness is closed-loop"],
+  "correctness_command":"cd app && ./run.sh test",
+  "operations":["POST /api/v1/score","POST /api/v1/score/rule/{id}","GET /api/v1/scripts"]
+}
