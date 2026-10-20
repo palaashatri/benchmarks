@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-09-30.
+Last audited: 2026-09-30; workload table updated by PR #5; repository re-checked 2026-10-20.
 
 ## Readiness
 
@@ -57,3 +57,20 @@ The old committed results were removed because they mixed smoke traffic with har
 2. Port the shared measurement engine from benchmark 01 to other workloads only after their claimed architecture exists.
 3. Implement real gRPC for HFT and real ONNX sessions; add workload-specific correctness and shared measurement integration before Tier 2 promotion.
 4. Keep publication claims out of documentation until a Tier 3 controlled-environment run exists.
+
+## Known issues (2026-10-20)
+
+- `tools/loadgen/run.sh` and `tools/run_tier2_ledger.sh` are tracked without the executable bit (`check_repository.py` warns; CI calls them via `bash`). `benchctl` itself was fixed in PR #5.
+- Workloads use three build paths: Gradle Kotlin DSL (01–08), Maven (09–13) and `run.sh` scripts that compile with raw `javac` and fetch jars with `curl`. None has a wrapper, and the `curl` downloads are version-pinned but not hash-checked.
+- `benchctl report` writes the result JSON inside an HTML `<pre>` block; there is no human-readable comparison yet.
+
+## Product roadmap
+
+What would make the suite useful to someone deciding between JDKs or collectors, in priority order:
+
+1. **First published, measurement-valid result set** for `01-fintech-ledger` on a quiet machine (pinned CPU frequency, no other load), with the environment fingerprint, raw data and `benchctl compare` output checked in under a dated `published/` directory.
+2. **A readable report:** `benchctl report` producing tables and charts — throughput and p50/p99/p99.9 latency per JDK × GC with confidence intervals, plus GC pause and RSS summaries — instead of a JSON dump.
+3. **One-command matrix runs:** `benchctl` fetching the JDK builds a plan needs (for example via the Foojay Disco API), so a user doesn't install eight JDKs by hand.
+4. **A second Tier 2 workload.** `02-microservices-mesh` now runs real separate JVMs and is the closest candidate; port the benchmark 01 measurement engine to it.
+5. **One build system with a wrapper** for every workload, and SHA-256 checks for every downloaded artifact.
+6. **Real gRPC for 12-hft-trading-gateway and real ONNX Runtime sessions for 09-onnx-inference**, then promote them.
