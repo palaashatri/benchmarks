@@ -79,6 +79,8 @@ def _identity(url: str, process: subprocess.Popen[str], token: str) -> None:
 def _sanitize_legacy_result(result: dict) -> dict:
     """Discard metrics known to come from the legacy load-generator process."""
     result.pop("env", None)
+    if result.get("schema_version") == core.RESULT_SCHEMA_VERSION and isinstance(result.get("application_runtime"), dict) and result.get("kpis") is None:
+        return result
     kpis = result.get("kpis")
     if isinstance(kpis, dict):
         for name in (

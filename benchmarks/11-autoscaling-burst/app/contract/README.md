@@ -1,8 +1,12 @@
-# Autoscaling Burst API contract
+# 11-autoscaling-burst external contract
 
-External surfaces used by the harness only.
+See `openapi.yaml` for the actual HTTP paths.
 
-Required operations:
-- GET /api/v1/products/{id}
-- GET /actuator/health
-- GET /actuator/prometheus
+The gateway applies a token bucket (capacity 200, refill 1,000/s), admits at most 1,000 queued jobs and dispatches work to real worker JVMs with two slots per replica. Search returns 202 with `completed=false`; completion is recorded only after an owned replica responds. A backlog above four jobs triggers scale-up, up to four replicas. Once the queue is empty and every replica idle for one second, extra replicas retire; one replica remains.
+
+Dead replicas are removed and replaced as needed. In-flight work that fails is counted explicitly in `failed`; queued work continues on surviving/new replicas. Failed jobs are not retried. Shutdown terminates children and stops admission/dispatch; it does not promise to drain queued work. This is local process scaling, without Kubernetes or production orchestration.
+Children use the parent's Java executable, unique readiness tokens and independently assigned ports. Readiness verifies PID, token and service role. A failed start is reaped and its temporary directory removed. Parent shutdown closes all owned children; EOF on the parent's stdin pipe also terminates children after forced parent exit. Child heaps are explicitly 16–128 MiB; parent tool-option variables are removed to avoid inherited debug ports and output-file collisions. Child flags/collectors can differ from the gateway; there is no multi-process performance comparison in this prototype.
+
+All listeners bind `127.0.0.1`. `PORT=0` selects an independently bound ephemeral HTTP port; `/runtime` reports PID, role, run token, Java version, executable, actual collector names and JVM arguments. `BENCH_PORT_FILE` is published after startup. Run `cd app && ./run.sh test` for external process/socket correctness checks and `cd harness && ./run.sh test` for smoke-result identity checks.
+
+These are Tier 1 functional prototypes. The shared harness accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.

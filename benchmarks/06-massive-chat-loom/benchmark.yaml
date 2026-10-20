@@ -1,14 +1,22 @@
 {
-  "schema_version":"1.0.0",
-  "id":"06-massive-chat-loom",
-  "tier":"tier-0",
-  "lane":"feature",
-  "min_jdk":21,
-  "max_jdk":25,
-  "implementation":"virtual-thread HTTP room simulator with subscriber-aware simulated delivery counts",
-  "persistent_connections":false,
-  "measurement_valid":false,
-  "invalid_reasons":["no persistent socket connections","deliveries are simulated rather than transmitted"],
-  "correctness_command":"cd app && ./run.sh test",
-  "operations":["POST /rooms/{id}/subscribers","POST /rooms/{id}/messages","GET /rooms/{id}/messages"]
+  "schema_version": "1.0.0",
+  "id": "06-massive-chat-loom",
+  "tier": "tier-1",
+  "lane": "feature",
+  "min_jdk": 21,
+  "max_jdk": 25,
+  "implementation": "virtual-thread persistent TCP room subscriptions and socket fan-out with HTTP control plane",
+  "persistent_connections": true,
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "functional smoke only",
+    "phased open-loop measurement and application telemetry are not integrated"
+  ],
+  "correctness_command": "cd app && ./run.sh test",
+  "operations": [
+    "POST /rooms/{id}/subscribers",
+    "POST /rooms/{id}/messages",
+    "GET /rooms/{id}/messages"
+  ],
+  "transport": "http-and-framed-tcp"
 }

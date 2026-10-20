@@ -1,8 +1,10 @@
-# Event-Driven Microservices Mesh contract
+# 02-microservices-mesh external contract
 
-External surfaces used by the harness only.
+See `openapi.yaml` for the actual HTTP paths.
 
-Required operations:
-- POST /events
-- GET /flows/{id}
-- POST /notifications/stub
+The gateway starts three child JVMs: account, transaction and notification. User lookup makes real account and notification HTTP calls. Order submission calls the account and transaction services. Child state and request counters expose these operations. A dead child makes gateway health degraded and dependent requests return 503.
+Children use the parent's Java executable, unique readiness tokens and independently assigned ports. Readiness verifies PID, token and service role. A failed start is reaped and its temporary directory removed. Parent shutdown closes all owned children; EOF on the parent's stdin pipe also terminates children after forced parent exit. Child heaps are explicitly 16–128 MiB; parent tool-option variables are removed to avoid inherited debug ports and output-file collisions. Child flags/collectors can differ from the gateway; there is no multi-process performance comparison in this prototype.
+
+All listeners bind `127.0.0.1`. `PORT=0` selects an independently bound ephemeral HTTP port; `/runtime` reports PID, role, run token, Java version, executable, actual collector names and JVM arguments. `BENCH_PORT_FILE` is published after startup. Run `cd app && ./run.sh test` for external process/socket correctness checks and `cd harness && ./run.sh test` for smoke-result identity checks.
+
+These are Tier 1 functional prototypes. The shared harness accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.

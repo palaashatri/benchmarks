@@ -85,25 +85,86 @@ jobs:
         run: |
           (cd benchmarks/01-fintech-ledger/app && ./run.sh test)
           (cd benchmarks/01-fintech-ledger/harness && ./run.sh test)
-      - name: Mesh, streaming, polyglot and ETL contracts
+      - name: Streaming, polyglot and ETL contracts
         run: |
-          (cd benchmarks/02-microservices-mesh/app && ./run.sh test)
           (cd benchmarks/03-streaming-analytics/app && ./run.sh test)
           (cd benchmarks/05-polyglot-service/app && ./run.sh test)
           (cd benchmarks/08-etl-batch/app && ./run.sh test)
       - name: Vector and FFM equivalence
         run: cd benchmarks/04-ml-inference-panama-vector/app && ./run.sh test
-      - name: Chat simulator semantics
-        run: cd benchmarks/06-massive-chat-loom/app && ./run.sh test
       - name: Cold-start child isolation
         run: cd benchmarks/07-coldstart-suite/app && ./run.sh test
       - name: Inference mode truthfulness
         run: cd benchmarks/09-onnx-inference/app && ./run.sh test
-      - name: Fleet and burst simulation honesty
-        run: |
-          (cd benchmarks/10-microservices-fleet/app && ./run.sh test)
-          (cd benchmarks/11-autoscaling-burst/app && ./run.sh test)
-      - name: Synthetic gateway invariants
-        run: cd benchmarks/12-hft-trading-gateway/app && ./run.sh test
       - name: Monolith class surface
         run: cd benchmarks/13-large-monolith/app && ./run.sh test
+
+  workload-architectures:
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['21', '25']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Owned-process lifecycle and framed TCP regressions
+        run: bash tools/workload_tests/run_common.sh
+      - name: Real workload architectures and truthful smoke harnesses
+        run: |
+          for workload in 02-microservices-mesh 06-massive-chat-loom 10-microservices-fleet 11-autoscaling-burst 12-hft-trading-gateway; do
+            (cd "benchmarks/$workload/app" && ./run.sh test)
+            (cd "benchmarks/$workload/harness" && ./run.sh test)
+          done
+
+  process-workloads-java17:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Java 17 lifecycle, fleet and autoscaling
+        run: |
+          bash tools/workload_tests/run_common.sh
+          for workload in 10-microservices-fleet 11-autoscaling-burst; do
+            (cd "benchmarks/$workload/app" && ./run.sh test)
+            (cd "benchmarks/$workload/harness" && ./run.sh test)
+          done
+
+  workload-native-builds:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Gradle source wiring and correctness tasks
+        run: |
+          for workload in 02-microservices-mesh 06-massive-chat-loom; do
+            gradle --no-daemon -p "benchmarks/$workload/app" test
+            gradle --no-daemon -p "benchmarks/$workload/harness" test
+          done
+      - name: Maven source wiring and correctness lifecycle
+        run: |
+          for workload in 10-microservices-fleet 11-autoscaling-burst 12-hft-trading-gateway; do
+            mvn -B -f "benchmarks/$workload/app/pom.xml" test
+            mvn -B -f "benchmarks/$workload/harness/pom.xml" test
+          done

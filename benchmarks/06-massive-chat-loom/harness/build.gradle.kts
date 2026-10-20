@@ -19,3 +19,11 @@ tasks.withType<JavaCompile>().configureEach {
 application {
     mainClass.set("com.palaashatri.bench.b06.harness.BenchmarkHarness")
 }
+
+sourceSets.main {
+    java.srcDir("../../common/src/main/java")
+    java.srcDir("../../../tools/smoke/src/main/java")
+}
+
+tasks.register<Exec>("smokeTest") { commandLine("sh", "./run.sh", "test") }
+tasks.named<Test>("test") { dependsOn("smokeTest") }

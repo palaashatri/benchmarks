@@ -1,11 +1,13 @@
 package com.palaashatri.bench.b12.app;
 
+import com.palaashatri.bench.common.FramedTcpServer;
+import com.palaashatri.bench.common.Json;
+import com.palaashatri.bench.common.Routes;
+import com.palaashatri.bench.common.RuntimeInfo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 import java.util.Map;
 import java.util.PriorityQueue;
@@ -13,15 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Deterministic, local-only matching-engine benchmark prototype.
- *
- * This is synthetic JVM workload code. It has no external venue connectivity,
- * account handling, market-data feed, or ability to place real transactions.
- * The transport is HTTP and the workload remains Tier 0 until real gRPC and a
- * coordinated-omission-safe histogram harness are implemented.
- */
-public final class MiniHttpServer {
+/** Synthetic symbol-isolated matching over HTTP and persistent framed TCP; no real venue or gRPC. */
+public final class MiniHttpServer implements AutoCloseable {
     enum Side { BUY, SELL }
     enum Status { OPEN, PARTIALLY_FILLED, FILLED, CANCELLED }
 
@@ -56,15 +51,15 @@ public final class MiniHttpServer {
         final AtomicLong rejected = new AtomicLong();
 
         String submit(String symbolValue, String sideValue, long quantity, long priceNanos) {
-            String symbol = symbolValue == null ? "" : symbolValue.trim().toUpperCase();
+            String symbol = symbolValue == null ? "" : symbolValue.trim().toUpperCase(java.util.Locale.ROOT);
             Side side;
             try {
-                side = Side.valueOf(sideValue == null ? "" : sideValue.trim().toUpperCase());
+                side = Side.valueOf(sideValue == null ? "" : sideValue.trim().toUpperCase(java.util.Locale.ROOT));
             } catch (IllegalArgumentException exception) {
                 rejected.incrementAndGet();
                 return rejection("INVALID_SIDE");
             }
-            if (symbol.isBlank() || quantity <= 0 || quantity > 10_000_000 || priceNanos <= 0) {
+            if (!symbol.matches("[A-Z0-9_.-]{1,32}") || quantity <= 0 || quantity > 10_000_000 || priceNanos <= 0) {
                 rejected.incrementAndGet();
                 return rejection("INVALID_PARAMS");
             }
@@ -182,173 +177,81 @@ public final class MiniHttpServer {
     private final AtomicLong requests = new AtomicLong();
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong submitDurationNs = new AtomicLong();
+    private final java.util.concurrent.ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    private HttpServer server;
+    private FramedTcpServer tcp;
 
-    public MiniHttpServer(String benchmark, String ignoredTitle) {
-        this.benchmark = benchmark;
-    }
-
+    public MiniHttpServer(String benchmark, String ignoredTitle) { this.benchmark = benchmark; }
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 512);
-        server.createContext("/health", this::health);
-        server.createContext("/runtime", this::runtime);
-        server.createContext("/metrics", this::metrics);
-        server.createContext("/orders", this::orders);
-        server.createContext("/grpc/SubmitOrder", this::legacySubmit);
-        server.createContext("/grpc/CancelOrder", this::legacyCancel);
-        server.createContext("/grpc/GetOrderStatus/", this::legacyStatus);
-        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
-        server.start();
-        System.out.printf(
-                "{\"event\":\"started\",\"benchmark\":\"%s\","
-                        + "\"transport\":\"http-prototype\",\"port\":%d,\"pid\":%d}%n",
-                benchmark,
-                port,
-                ProcessHandle.current().pid());
+        Runtime.getRuntime().addShutdownHook(new Thread(this::close, "trading-shutdown"));
+        try {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 512);
+            tcp = new FramedTcpServer(Executors.newVirtualThreadPerTaskExecutor(), (session, frame) -> {
+                requests.incrementAndGet();
+                String op = Json.string(frame, "op", "");
+                String body = switch (op) {
+                    case "SubmitOrder" -> submit(frame);
+                    case "CancelOrder" -> orderBook.cancel(Json.string(frame, "order_id", ""));
+                    case "GetOrderStatus" -> orderBook.status(Json.string(frame, "order_id", ""));
+                    default -> Json.stringify(Map.of("error", "unknown_operation"));
+                };
+                return Json.parseObject(body);
+            });
+            server.createContext("/health", Routes.guard(e -> Json.reply(e, 200, Map.of("status", "UP",
+                    "transport", "http-and-framed-tcp", "grpc_active", false, "tcp_port", tcp.port()))));
+            server.createContext("/runtime", Routes.guard(e -> Json.bytes(e, 200, "application/json", RuntimeInfo.json())));
+            server.createContext("/metrics", Routes.guard(this::metrics));
+            server.createContext("/orders", Routes.guard(this::orders));
+            // Backward-compatible HTTP aliases; these are never advertised as gRPC.
+            server.createContext("/grpc/SubmitOrder", Routes.guard(e -> {
+                if (Routes.method(e, "POST")) Json.bytes(e, 200, "application/json", submit(Json.read(e)));
+            }));
+            server.createContext("/grpc/CancelOrder", Routes.guard(e -> {
+                if (Routes.method(e, "POST")) Json.bytes(e, 200, "application/json", orderBook.cancel(Json.string(Json.read(e), "order_id", "")));
+            }));
+            server.createContext("/grpc/GetOrderStatus/", Routes.guard(e -> {
+                if (Routes.method(e, "GET")) Json.bytes(e, 200, "application/json", orderBook.status(e.getRequestURI().getPath().substring("/grpc/GetOrderStatus/".length())));
+            }));
+            server.setExecutor(executor); server.start(); RuntimeInfo.publishPort(server.getAddress().getPort());
+            System.out.println(Json.stringify(Map.of("event", "started", "benchmark", benchmark, "port", server.getAddress().getPort(), "tcp_port", tcp.port())));
+        } catch (IOException | RuntimeException failure) { close(); throw failure; }
     }
-
-    private void health(HttpExchange exchange) throws IOException {
-        json(exchange, 200,
-                "{\"status\":\"UP\",\"transport\":\"http-prototype\","
-                        + "\"grpc_active\":false}");
+    private String submit(Map<String, Object> body) {
+        long started = System.nanoTime();
+        String result = orderBook.submit(Json.string(body, "symbol", ""), Json.string(body, "side", ""),
+                Json.number(body, "quantity", -1), Json.number(body, "price_nanos", -1));
+        submitted.incrementAndGet(); submitDurationNs.addAndGet(System.nanoTime() - started);
+        return result;
     }
-
-    private void runtime(HttpExchange exchange) throws IOException {
-        json(exchange, 200,
-                "{\"pid\":" + ProcessHandle.current().pid()
-                        + ",\"run_token\":\""
-                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
-                        + "\",\"java_version\":\""
-                        + escape(System.getProperty("java.version")) + "\"}");
-    }
-
-    private void metrics(HttpExchange exchange) throws IOException {
-        String body = "# TYPE gateway_orders_submitted_total counter\n"
-                + "gateway_orders_submitted_total " + submitted.get() + "\n"
-                + "# TYPE gateway_match_events_total counter\n"
-                + "gateway_match_events_total " + orderBook.matchEvents.get() + "\n"
-                + "# TYPE gateway_filled_quantity_total counter\n"
-                + "gateway_filled_quantity_total " + orderBook.filledQuantity.get() + "\n"
-                + "# TYPE gateway_submit_duration_seconds_sum counter\n"
-                + "gateway_submit_duration_seconds_sum "
-                + format(submitDurationNs.get() / 1_000_000_000.0) + "\n"
-                + "# TYPE gateway_rejected_total counter\n"
-                + "gateway_rejected_total " + orderBook.rejected.get() + "\n"
-                + "# TYPE gateway_grpc_active gauge\n"
-                + "gateway_grpc_active 0\n"
-                + "# TYPE benchmark_requests_total counter\n"
-                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} "
-                + requests.get() + "\n";
-        bytes(exchange, 200, "text/plain; version=0.0.4", body);
-    }
-
     private void orders(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        String path = exchange.getRequestURI().getPath();
-        String method = exchange.getRequestMethod();
-        if ("POST".equalsIgnoreCase(method) && "/orders".equals(path)) {
-            submit(exchange);
+        String path = exchange.getRequestURI().getPath(), method = exchange.getRequestMethod();
+        if (path.equals("/orders")) {
+            if (Routes.method(exchange, "POST")) Json.bytes(exchange, 200, "application/json", submit(Json.read(exchange)));
             return;
         }
-        if (path.startsWith("/orders/")) {
-            String id = path.substring("/orders/".length());
-            if ("GET".equalsIgnoreCase(method)) {
-                json(exchange, 200, orderBook.status(id));
-                return;
-            }
-            if ("DELETE".equalsIgnoreCase(method)) {
-                json(exchange, 200, orderBook.cancel(id));
-                return;
-            }
-        }
-        json(exchange, 404, "{\"error\":\"not_found\"}");
+        if (!path.startsWith("/orders/")) { Json.reply(exchange, 404, Map.of("error", "not_found")); return; }
+        String id = path.substring("/orders/".length());
+        if (method.equals("GET")) Json.bytes(exchange, 200, "application/json", orderBook.status(id));
+        else if (method.equals("DELETE")) Json.bytes(exchange, 200, "application/json", orderBook.cancel(id));
+        else Json.reply(exchange, 405, Map.of("error", "method_not_allowed"));
     }
-
-    private void submit(HttpExchange exchange) throws IOException {
-        long started = System.nanoTime();
-        String body = new String(
-                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        String response = orderBook.submit(
-                field(body, "symbol", ""),
-                field(body, "side", ""),
-                number(body, "quantity", -1),
-                number(body, "price_nanos", -1));
-        submitted.incrementAndGet();
-        json(exchange, 200, response);
-        submitDurationNs.addAndGet(System.nanoTime() - started);
+    private void metrics(HttpExchange exchange) throws IOException {
+        Json.bytes(exchange, 200, "text/plain; version=0.0.4", "gateway_orders_submitted_total " + submitted.get() + "\n"
+                + "gateway_match_events_total " + orderBook.matchEvents.get() + "\n"
+                + "gateway_filled_quantity_total " + orderBook.filledQuantity.get() + "\n"
+                + "gateway_submit_duration_seconds_sum " + (submitDurationNs.get() / 1_000_000_000.0) + "\n"
+                + "gateway_rejected_total " + orderBook.rejected.get() + "\n"
+                + "gateway_grpc_active 0\n" + "gateway_tcp_connections " + tcp.connections() + "\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n");
     }
-
-    private void legacySubmit(HttpExchange exchange) throws IOException {
-        requests.incrementAndGet();
-        submit(exchange);
-    }
-
-    private void legacyCancel(HttpExchange exchange) throws IOException {
-        requests.incrementAndGet();
-        String body = new String(
-                exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-        json(exchange, 200, orderBook.cancel(field(body, "order_id", "")));
-    }
-
-    private void legacyStatus(HttpExchange exchange) throws IOException {
-        requests.incrementAndGet();
-        String id = exchange.getRequestURI().getPath()
-                .substring("/grpc/GetOrderStatus/".length());
-        json(exchange, 200, orderBook.status(id));
-    }
-
-    private static String field(String body, String name, String fallback) {
-        String key = "\"" + name + "\"";
-        int at = body.indexOf(key);
-        if (at < 0) return fallback;
-        int colon = body.indexOf(':', at + key.length());
-        int start = body.indexOf('"', colon + 1);
-        int end = start < 0 ? -1 : body.indexOf('"', start + 1);
-        return colon < 0 || start < 0 || end < 0
-                ? fallback
-                : body.substring(start + 1, end);
-    }
-
-    private static long number(String body, String name, long fallback) {
-        String key = "\"" + name + "\"";
-        int at = body.indexOf(key);
-        if (at < 0) return fallback;
-        int colon = body.indexOf(':', at + key.length());
-        if (colon < 0) return fallback;
-        int start = colon + 1;
-        while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
-        int end = start;
-        while (end < body.length()
-                && (Character.isDigit(body.charAt(end)) || body.charAt(end) == '-')) end++;
-        try {
-            return Long.parseLong(body.substring(start, end));
-        } catch (RuntimeException ignored) {
-            return fallback;
-        }
-    }
-
     private static String escape(String value) {
-        return value == null
-                ? ""
-                : value.replace("\\", "\\\\").replace("\"", "\\\"");
+        String json = Json.stringify(value == null ? "" : value);
+        return json.substring(1, json.length() - 1);
     }
-
-    private static String format(double value) {
-        return String.format(java.util.Locale.ROOT, "%.9f", value);
-    }
-
-    private static void json(HttpExchange exchange, int status, String body)
-            throws IOException {
-        bytes(exchange, status, "application/json", body);
-    }
-
-    private static void bytes(
-            HttpExchange exchange, int status, String contentType, String body)
-            throws IOException {
-        byte[] payload = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", contentType);
-        exchange.sendResponseHeaders(status, payload.length);
-        try (OutputStream output = exchange.getResponseBody()) {
-            output.write(payload);
-        }
+    @Override public synchronized void close() {
+        if (server != null) server.stop(0);
+        if (tcp != null) tcp.close();
+        executor.shutdownNow();
     }
 }

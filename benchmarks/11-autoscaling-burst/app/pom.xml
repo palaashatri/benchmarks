@@ -10,6 +10,15 @@
   <build>
     <plugins>
       <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions><execution><id>shared-application-sources</id><phase>generate-sources</phase>
+          <goals><goal>add-source</goal></goals>
+          <configuration><sources><source>${project.basedir}/../../common/src/main/java</source></sources></configuration>
+        </execution></executions>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.13.0</version>
@@ -18,6 +27,11 @@
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
+        <executions><execution><id>architecture-correctness</id><phase>test</phase><goals><goal>exec</goal></goals>
+          <configuration><executable>sh</executable><workingDirectory>${project.basedir}</workingDirectory>
+            <arguments><argument>./run.sh</argument><argument>test</argument></arguments>
+          </configuration>
+        </execution></executions>
         <configuration><mainClass>com.palaashatri.bench.b11.app.BenchmarkApp</mainClass></configuration>
       </plugin>
     </plugins>

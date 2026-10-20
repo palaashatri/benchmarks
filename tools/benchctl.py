@@ -612,6 +612,19 @@ def enrich_smoke_result(
     raw: dict[str, Any], item: dict[str, Any], run_id: str, app_pid: int
 ) -> dict[str, Any]:
     raw.pop("env", None)
+    identity = raw.get("application_runtime")
+    if raw.get("schema_version") == RESULT_SCHEMA_VERSION and isinstance(identity, dict) and raw.get("kpis") is None:
+        if identity.get("pid") != app_pid:
+            raise BenchError("smoke result application identity does not match the owned process")
+        raw.update({
+            "run_id": run_id, "run_kind": "smoke", "implementation_tier": item["tier"],
+            "measurement_valid": False, "application_pid": app_pid,
+            "runtime": identity.get("java_version"), "gc": identity.get("collectors"),
+            "jvm_flags": identity.get("jvm_args"),
+            "selected_configuration": {"runtime": item["runtime"], "gc": item["gc"], "jvm_flags": item["gc_flags"]},
+            "environment": environment_fingerprint(),
+        })
+        return raw
     raw.update({
         "schema_version": RESULT_SCHEMA_VERSION,
         "run_id": run_id,

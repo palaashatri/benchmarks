@@ -1,14 +1,23 @@
 {
-  "schema_version":"1.0.0",
-  "id":"11-autoscaling-burst",
-  "tier":"tier-0",
-  "lane":"feature",
-  "min_jdk":17,
-  "max_jdk":25,
-  "implementation":"single-JVM bounded queue and dynamically resized worker pool",
-  "external_replicas":0,
-  "measurement_valid":false,
-  "invalid_reasons":["worker threads are not external replicas","no process or Kubernetes readiness delay"],
-  "correctness_command":"cd app && ./run.sh test",
-  "operations":["POST /api/v1/catalog/search","GET /api/v1/metrics/scaling"]
+  "schema_version": "1.0.0",
+  "id": "11-autoscaling-burst",
+  "tier": "tier-1",
+  "lane": "feature",
+  "min_jdk": 17,
+  "max_jdk": 25,
+  "implementation": "bounded admission and queued work dispatched to one to four independently ready worker JVMs",
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "functional smoke only",
+    "phased open-loop measurement and application telemetry are not integrated",
+    "local process scaling; no Kubernetes integration"
+  ],
+  "correctness_command": "cd app && ./run.sh test",
+  "operations": [
+    "POST /api/v1/catalog/search",
+    "GET /api/v1/metrics/scaling"
+  ],
+  "scaling_model": "local-process-replicas",
+  "min_replicas": 1,
+  "max_replicas": 4
 }

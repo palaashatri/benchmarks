@@ -1,131 +1,145 @@
 package com.palaashatri.bench.b06.app;
 
+import com.palaashatri.bench.common.FramedTcpServer;
+import com.palaashatri.bench.common.Json;
+import com.palaashatri.bench.common.Routes;
+import com.palaashatri.bench.common.RuntimeInfo;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-/** HTTP room simulator. Persistent-connection fan-out remains future Tier-1 work. */
-public final class MiniHttpServer {
-    private final String benchmark;
-    private final AtomicLong requests = new AtomicLong();
-    private final AtomicLong messagesPublished = new AtomicLong();
-    private final AtomicLong deliveries = new AtomicLong();
-    private final AtomicLong ids = new AtomicLong(1);
-    private final ConcurrentHashMap<String, Set<String>> subscribers = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, ConcurrentLinkedDeque<String>> messages = new ConcurrentHashMap<>();
-
-    public MiniHttpServer(String benchmark, String ignoredTitle) { this.benchmark = benchmark; }
-
-    public void start(int port) throws IOException {
-        seed();
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
-        server.createContext("/health", this::health);
-        server.createContext("/runtime", this::runtime);
-        server.createContext("/metrics", this::metrics);
-        server.createContext("/api/v1/stats", this::stats);
-        server.createContext("/rooms", this::rooms);
-        server.createContext("/rooms/", this::room);
-        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
-        server.start();
-        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"mode\":\"http-room-simulator\",\"port\":%d,\"pid\":%d}%n",
-                benchmark, port, ProcessHandle.current().pid());
+/** Virtual-thread persistent TCP fan-out with an HTTP control plane. */
+public final class MiniHttpServer implements AutoCloseable {
+    private static final class Room {
+        final Map<FramedTcpServer.Session, String> subscribers = new ConcurrentHashMap<>();
+        final Set<String> registrations = ConcurrentHashMap.newKeySet();
+        final ArrayDeque<Map<String, Object>> history = new ArrayDeque<>();
     }
-
-    private void seed() {
-        for (int index = 1; index <= 50; index++) {
-            String room = "room-" + index;
-            subscribers.computeIfAbsent(room, ignored -> ConcurrentHashMap.newKeySet());
-            messages.computeIfAbsent(room, ignored -> new ConcurrentLinkedDeque<>());
+    private final String benchmark;
+    private final Map<String, Room> rooms = new ConcurrentHashMap<>();
+    private final AtomicLong ids = new AtomicLong();
+    private final AtomicLong published = new AtomicLong();
+    private final AtomicLong queued = new AtomicLong();
+    private final AtomicLong delivered = new AtomicLong();
+    private final AtomicLong requests = new AtomicLong();
+    private final java.util.concurrent.ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+    private HttpServer server;
+    private FramedTcpServer tcp;
+    public MiniHttpServer(String benchmark, String ignoredTitle) {
+        this.benchmark = benchmark;
+        for (int i = 1; i <= 50; i++) rooms.put("room-" + i, new Room());
+    }
+    private synchronized Room room(String name) {
+        if (!name.matches("[A-Za-z0-9_.-]{1,64}")) throw new IllegalArgumentException("invalid room name");
+        if (!rooms.containsKey(name) && rooms.size() >= 1_000) throw new IllegalArgumentException("room capacity reached");
+        return rooms.computeIfAbsent(name, ignored -> new Room());
+    }
+    public void start(int port) throws IOException {
+        Runtime.getRuntime().addShutdownHook(new Thread(this::close, "chat-shutdown"));
+        try {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
+            tcp = new FramedTcpServer(Executors.newVirtualThreadPerTaskExecutor(), new FramedTcpServer.Handler() {
+                @Override public Map<String, Object> onFrame(FramedTcpServer.Session session, Map<String, Object> frame) {
+                    String op = Json.string(frame, "op", "");
+                    if (op.equals("ping")) return Map.of("op", "pong");
+                    if (!Set.of("subscribe", "unsubscribe", "publish").contains(op)) return Map.of("error", "unknown_operation");
+                    String name = Json.string(frame, "room", "");
+                    Room room = room(name);
+                    if (op.equals("subscribe")) {
+                        String user = Json.string(frame, "user", "");
+                        if (user.isBlank() || user.length() > 64) throw new IllegalArgumentException("invalid user");
+                        room.subscribers.put(session, user);
+                        if (!session.isOpen()) room.subscribers.remove(session);
+                        return Map.of("subscribed", true, "room", name, "user", user);
+                    }
+                    if (op.equals("unsubscribe")) { room.subscribers.remove(session); return Map.of("unsubscribed", true, "room", name); }
+                    String user = room.subscribers.get(session);
+                    if (user == null) return Map.of("error", "subscription_required");
+                    return publish(name, room, user, Json.string(frame, "content", ""));
+                }
+                @Override public void onClose(FramedTcpServer.Session session) { rooms.values().forEach(room -> room.subscribers.remove(session)); }
+                @Override public void onWritten(FramedTcpServer.Session session, Map<String, Object> frame) {
+                    if ("message".equals(frame.get("op"))) delivered.incrementAndGet();
+                }
+            });
+            server.createContext("/health", Routes.guard(e -> Json.reply(e, 200, Map.of("status", "UP",
+                    "mode", "persistent-tcp-chat", "persistent_connections", true, "tcp_port", tcp.port()))));
+            server.createContext("/runtime", Routes.guard(e -> Json.bytes(e, 200, "application/json", RuntimeInfo.json())));
+            server.createContext("/metrics", Routes.guard(this::metrics));
+            server.createContext("/api/v1/stats", Routes.guard(this::stats));
+            server.createContext("/rooms", Routes.guard(this::rooms));
+            server.setExecutor(executor); server.start(); RuntimeInfo.publishPort(server.getAddress().getPort());
+            System.out.println(Json.stringify(Map.of("event", "started", "benchmark", benchmark, "port", server.getAddress().getPort(), "tcp_port", tcp.port())));
+        } catch (IOException | RuntimeException failure) { close(); throw failure; }
+    }
+    private Map<String, Object> publish(String name, Room room, String sender, String content) {
+        if (content.getBytes(StandardCharsets.UTF_8).length > 16_384) throw new IllegalArgumentException("message too large");
+        synchronized (room) {
+            long id = ids.incrementAndGet();
+            var message = Map.<String, Object>of("op", "message", "room", name, "message_id", id, "sender", sender, "content", content);
+            room.history.addLast(message);
+            if (room.history.size() > 100) room.history.removeFirst();
+            long count = room.subscribers.keySet().stream().filter(session -> session.offer(message)).count();
+            published.incrementAndGet(); queued.addAndGet(count);
+            return Map.of("room_id", name, "message_id", id, "queued_deliveries", count, "delivery_model", "persistent-tcp");
         }
     }
-
-    private void health(HttpExchange exchange) throws IOException {
-        json(exchange, 200, "{\"status\":\"UP\",\"mode\":\"http-room-simulator\",\"persistent_connections\":false}");
-    }
-    private void runtime(HttpExchange exchange) throws IOException {
-        json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid() + ",\"run_token\":\""
-                + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", "")) + "\",\"java_version\":\""
-                + escape(System.getProperty("java.version")) + "\"}");
-    }
-
     private void rooms(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
-            json(exchange, 405, "{\"error\":\"method_not_allowed\"}"); return;
+        String path = exchange.getRequestURI().getPath();
+        if (path.equals("/rooms")) {
+            if (!Routes.method(exchange, "GET")) return;
+            var list = new ArrayList<Object>();
+            rooms.forEach((name, room) -> {
+                synchronized (room) { list.add(Map.of("id", name, "subscribers", room.subscribers.size(), "messages", room.history.size())); }
+            });
+            Json.reply(exchange, 200, list); return;
         }
-        List<String> values = new ArrayList<>();
-        for (String room : subscribers.keySet()) {
-            values.add("{\"id\":\"" + escape(room) + "\",\"subscribers\":" + subscribers.get(room).size()
-                    + ",\"messages\":" + messages.get(room).size() + "}");
+        String[] pieces = path.split("/");
+        if (pieces.length != 4) { Json.reply(exchange, 404, Map.of("error", "not_found")); return; }
+        String name = pieces[2], action = pieces[3];
+        Room room = room(name);
+        if (action.equals("subscribers")) {
+            if (exchange.getRequestMethod().equals("POST")) {
+                String user = Json.string(Json.read(exchange), "user", "");
+                if (user.isBlank() || user.length() > 64) throw new IllegalArgumentException("invalid user");
+                room.registrations.add(user);
+            } else if (!Routes.method(exchange, "GET")) return;
+            Json.reply(exchange, 200, Map.of("room_id", name, "subscribers", room.subscribers.size(),
+                    "registered_users", room.registrations.size(), "socket_required", true)); return;
         }
-        json(exchange, 200, "[" + String.join(",", values) + "]");
+        if (!action.equals("messages")) { Json.reply(exchange, 404, Map.of("error", "not_found")); return; }
+        if (exchange.getRequestMethod().equals("POST")) {
+            var frame = Json.read(exchange);
+            Json.reply(exchange, 200, publish(name, room, Json.string(frame, "sender", "anonymous"), Json.string(frame, "content", "")));
+        } else {
+            if (!Routes.method(exchange, "GET")) return;
+            synchronized (room) { Json.reply(exchange, 200, room.history); }
+        }
     }
-
-    private void room(HttpExchange exchange) throws IOException {
-        requests.incrementAndGet();
-        String[] path = exchange.getRequestURI().getPath().split("/");
-        if (path.length != 4) { json(exchange, 404, "{\"error\":\"not_found\"}"); return; }
-        String room = path[2], action = path[3];
-        subscribers.computeIfAbsent(room, ignored -> ConcurrentHashMap.newKeySet());
-        messages.computeIfAbsent(room, ignored -> new ConcurrentLinkedDeque<>());
-        if ("subscribers".equals(action)) {
-            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-                String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-                String user = field(body, "user", "");
-                if (user.isBlank()) { json(exchange, 400, "{\"error\":\"user_required\"}"); return; }
-                subscribers.get(room).add(user);
-                json(exchange, 200, "{\"room_id\":\"" + escape(room) + "\",\"subscribers\":" + subscribers.get(room).size() + "}");
-            } else {
-                json(exchange, 200, "{\"room_id\":\"" + escape(room) + "\",\"subscribers\":" + subscribers.get(room).size() + "}");
-            }
-            return;
-        }
-        if (!"messages".equals(action)) { json(exchange, 404, "{\"error\":\"not_found\"}"); return; }
-        if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
-            String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            String sender = field(body, "sender", "anonymous"), content = field(body, "content", "");
-            long id = ids.getAndIncrement();
-            String message = "{\"message_id\":" + id + ",\"sender\":\"" + escape(sender)
-                    + "\",\"content\":\"" + escape(content) + "\"}";
-            ConcurrentLinkedDeque<String> queue = messages.get(room); queue.addLast(message);
-            while (queue.size() > 100) queue.pollFirst();
-            long delivered = subscribers.get(room).size();
-            messagesPublished.incrementAndGet(); deliveries.addAndGet(delivered);
-            json(exchange, 200, "{\"room_id\":\"" + escape(room) + "\",\"message_id\":" + id
-                    + ",\"delivered\":" + delivered + ",\"delivery_model\":\"simulated\"}");
-            return;
-        }
-        json(exchange, 200, "[" + String.join(",", messages.get(room)) + "]");
-    }
-
     private void stats(HttpExchange exchange) throws IOException {
-        json(exchange, 200, "{\"active_rooms\":" + subscribers.size() + ",\"subscribers\":"
-                + subscribers.values().stream().mapToLong(Set::size).sum() + ",\"messages_published\":"
-                + messagesPublished.get() + ",\"simulated_deliveries\":" + deliveries.get()
-                + ",\"persistent_connections\":0}");
+        Json.reply(exchange, 200, Map.of("active_rooms", rooms.size(), "subscribers", rooms.values().stream().mapToLong(r -> r.subscribers.size()).sum(),
+                "persistent_connections", tcp.connections(), "messages_published", published.get(), "queued_deliveries", queued.get(),
+                "socket_deliveries", delivered.get(), "delivery_definition", "flushed-to-socket; no client acknowledgement"));
     }
     private void metrics(HttpExchange exchange) throws IOException {
-        String body = "# TYPE chat_messages_published_total counter\nchat_messages_published_total " + messagesPublished.get() + "\n"
-                + "# TYPE chat_simulated_deliveries_total counter\nchat_simulated_deliveries_total " + deliveries.get() + "\n"
-                + "# TYPE chat_persistent_connections gauge\nchat_persistent_connections 0\n"
-                + "# TYPE benchmark_requests_total counter\nbenchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n";
-        bytes(exchange, 200, "text/plain; version=0.0.4", body);
+        Json.bytes(exchange, 200, "text/plain; version=0.0.4", "chat_messages_published_total " + published.get() + "\n"
+                + "chat_socket_deliveries_total " + delivered.get() + "\n" + "chat_queued_deliveries_total " + queued.get() + "\n"
+                + "chat_persistent_connections " + tcp.connections() + "\n"
+                + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n");
     }
-
-    private static String field(String body, String name, String fallback) {
-        String key="\""+name+"\"";int at=body.indexOf(key);if(at<0)return fallback;int colon=body.indexOf(':',at+key.length());int start=body.indexOf('"',colon+1),end=start<0?-1:body.indexOf('"',start+1);return colon<0||start<0||end<0?fallback:body.substring(start+1,end);
+    @Override public synchronized void close() {
+        if (server != null) server.stop(0);
+        if (tcp != null) tcp.close();
+        executor.shutdownNow();
     }
-    private static String escape(String value){return value==null?"":value.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n");}
-    private static void json(HttpExchange exchange,int status,String body)throws IOException{bytes(exchange,status,"application/json",body);}
-    private static void bytes(HttpExchange exchange,int status,String type,String body)throws IOException{byte[] payload=body.getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type",type);exchange.sendResponseHeaders(status,payload.length);try(OutputStream output=exchange.getResponseBody()){output.write(payload);}}
 }

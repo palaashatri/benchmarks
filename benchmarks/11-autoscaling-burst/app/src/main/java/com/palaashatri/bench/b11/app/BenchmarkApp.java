@@ -4,6 +4,7 @@ public final class BenchmarkApp {
     private BenchmarkApp() { }
 
     public static void main(String[] args) throws Exception {
+        com.palaashatri.bench.common.RuntimeInfo.watchParent();
         int port = Integer.parseInt(System.getenv().getOrDefault("PORT", args.length > 0 ? args[0] : "8080"));
         new MiniHttpServer("11-autoscaling-burst", "Autoscaling Burst API").start(port);
     }
