@@ -36,6 +36,7 @@ compile() {
   mkdir -p "$CLASSES_DIR"
   find src/main/java ../../common/src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
   javac --release 21 -cp "$RHINO_JAR" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  printf '%s' "$CLASSES_DIR:$RHINO_JAR" > build/run-sh/classpath.txt
 }
 
 run() {

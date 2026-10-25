@@ -56,3 +56,7 @@ All 40 requests succeeded across 3 runs.
 
 - Virtual threads used for HttpServer executor (per spec) and consumer threads (spec said "virtual threads on startup").
 - The `run.sh` SMOKE_GETS/SMOKE_POSTS paths were updated to match the new API routes (`/api/v1/events`, `/api/v1/windows/sensor-1`, `/api/v1/lag`).
+
+## Tier 2 measurement
+
+The Tier 2 engine drives the processor through `tier2.json` (event ingestion and lag reads). The windows are event-time tumbling windows over an in-memory queue. There is no durable state or broker, so the numbers describe the processor alone.

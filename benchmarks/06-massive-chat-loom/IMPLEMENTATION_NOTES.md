@@ -7,3 +7,16 @@ The HTTP control plane and persistent TCP listener share room state. Each TCP co
 All listeners bind `127.0.0.1`. `PORT=0` selects an independently bound ephemeral HTTP port; `/runtime` reports PID, role, run token, Java version, executable, actual collector names and JVM arguments. `BENCH_PORT_FILE` is published after startup. Run `cd app && ./run.sh test` for external process/socket correctness checks and `cd harness && ./run.sh test` for smoke-result identity checks.
 
 These are Tier 1 functional prototypes. The shared harness accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.
+
+## Measurement lane
+
+Chat delivery is measured by `harness/src/main/java/com/palaashatri/bench/b06/harness/ChatLoad.java`, not by the HTTP engine. The driver starts the application, opens persistent subscriber and publisher connections over the newline-framed TCP protocol, publishes on an open-loop schedule, and measures delivery latency from each message's intended send time. Every message frame received is checked against the server's queued-delivery count (conservation). Application CPU and RSS are sampled from `/proc` for the application process only.
+
+Run it after building the application and the harness:
+
+```sh
+(cd app && ./run.sh build)
+(cd harness && ./run.sh build && java -cp build/run-sh/classes com.palaashatri.bench.b06.harness.ChatLoad --out <file> --subscribers 200 --rooms 8 --publishers 8 --rate 500 --warmup-seconds 3 --measure-seconds 10)
+```
+
+Latency is measured by the driver, not the application, and the envelope says so.

@@ -66,3 +66,7 @@ None — `jdk.incubator.vector` and `java.lang.foreign` are built-in JDK 21 modu
 - `--release 21` flag dropped from the run.sh javac invocation because `--enable-preview` requires it to match the host JDK version (host is JDK 25). The Gradle build retains `options.release.set(21)` for Gradle-driven builds.
 - `--enable-preview` added alongside `--add-modules` in Gradle build. Panama FFM is final in JDK 22+; `--enable-preview` is harmless on JDK 25.
 - `mode_kpis` values are structural zeros. Populating them with live SIMD-vs-scalar timing ratios requires routing response-body parsing through the harness, which is left for a later iteration.
+
+## Tier 2 measurement
+
+The Tier 2 engine drives both inference paths through `tier2.json`. The contract declares the preview flags (`--enable-preview --add-modules=jdk.incubator.vector`) that the JVM must be started with, so they are part of the measured configuration. The mix is 90 percent vectorised requests and 10 percent scalar requests.

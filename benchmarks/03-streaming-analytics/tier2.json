@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "app_dir": "app",
+  "main_class": "com.palaashatri.bench.b03.app.BenchmarkApp",
+  "token_prefix": "stream",
+  "identity_path": "/runtime",
+  "load_mix": "app/contract/load-mix.tsv",
+  "correctness": [
+    "./run.sh",
+    "test"
+  ],
+  "build": [
+    "./run.sh",
+    "build"
+  ],
+  "classpath_file": "build/run-sh/classpath.txt",
+  "classpath_prefix": []
+}

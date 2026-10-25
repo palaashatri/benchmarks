@@ -127,7 +127,7 @@ public final class MiniHttpServer implements AutoCloseable {
         }
     }
     private void stats(HttpExchange exchange) throws IOException {
-        Json.reply(exchange, 200, Map.of("active_rooms", rooms.size(), "subscribers", rooms.values().stream().mapToLong(r -> r.subscribers.size()).sum(),
+        Json.reply(exchange, 200, Map.of("active_rooms", rooms.values().stream().filter(room -> !room.subscribers.isEmpty()).count(), "rooms", rooms.size(), "subscribers", rooms.values().stream().mapToLong(r -> r.subscribers.size()).sum(),
                 "persistent_connections", tcp.connections(), "messages_published", published.get(), "queued_deliveries", queued.get(),
                 "socket_deliveries", delivered.get(), "delivery_definition", "flushed-to-socket; no client acknowledgement"));
     }

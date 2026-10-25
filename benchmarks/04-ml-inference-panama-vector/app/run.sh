@@ -11,6 +11,7 @@ compile() {
   find src/main/java ../../common/src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
   javac --release 21 --enable-preview --add-modules jdk.incubator.vector \
     -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  printf '%s' "$CLASSES_DIR" > build/run-sh/classpath.txt
 }
 
 run() {
