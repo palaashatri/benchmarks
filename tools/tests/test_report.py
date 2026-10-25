@@ -123,6 +123,26 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RunEnvelopeTests(unittest.TestCase):
+    def test_run_directory_is_reported_as_one_section_per_workload(self):
+        run = {
+            "schema_version": "1.0.0",
+            "run_kind": "benchmark",
+            "measurement_valid": False,
+            "results": [benchmark_result(1000.0), benchmark_result(1100.0, valid=False)],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run"
+            path.mkdir()
+            (path / "result.json").write_text(json.dumps(run))
+            output = Path(tmp) / "report.html"
+            benchctl_report.write_report([path], output, benchctl._load_result_path)
+            text = output.read_text()
+        self.assertIn("run / 01-fintech-ledger", text)
+        self.assertIn("Measurement-valid benchmark result.", text)
+        self.assertIn("Not a measurement-valid result", text)
+
+
 class ChartTests(unittest.TestCase):
     def test_missing_bar_values_are_labelled_unknown_and_never_drawn(self):
         svg = benchctl_report.svg_bar_chart("Peak RSS", ["rep 1", "rep 2", "rep 3"], [100.0, None, 120.0], "MiB")

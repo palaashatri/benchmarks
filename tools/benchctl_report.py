@@ -467,11 +467,25 @@ def entry_label(path: Path) -> str:
     return path.stem
 
 
+def expand_run_envelopes(entries: Sequence[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
+    """A run directory holds one envelope per workload under `results`; report each of them."""
+    expanded: list[tuple[str, dict[str, Any]]] = []
+    for label, document in entries:
+        items = document.get("results")
+        if isinstance(items, list) and items and all(isinstance(item, dict) for item in items):
+            for index, item in enumerate(items, start=1):
+                name = item.get("benchmark") or f"item {index}"
+                expanded.append((f"{label} / {name}", item))
+        else:
+            expanded.append((label, document))
+    return expanded
+
+
 def write_report(
     paths: Sequence[Path],
     output: Path,
     load: Callable[[Path], dict[str, Any]],
 ) -> Path:
-    entries = [(entry_label(path), load(path)) for path in paths]
+    entries = expand_run_envelopes([(entry_label(path), load(path)) for path in paths])
     output.write_text(render_report(entries))
     return output
