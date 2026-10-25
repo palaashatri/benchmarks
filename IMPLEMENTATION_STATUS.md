@@ -4,7 +4,7 @@ Last audited: 2026-09-30. Code-completion pass re-checked 2026-10-25: the Tier 2
 
 ## Readiness
 
-**Overall classification: the code for the Tier 2 measurement path is complete for workloads 01, 09, 12 and 13. Workloads 02–08, 10 and 11 are Tier 1 prototypes and are not yet at their documented design. No measurement-valid results exist yet. Benchmark execution waits for controlled hardware.**
+**Overall classification: the code for the Tier 2 measurement path is complete for workloads 01, 09, 12 and 13. Workloads 00, 02–08, 10 and 11 are Tier 1 and are not yet at their documented design. No measurement-valid results exist yet. Benchmark execution waits for controlled hardware.**
 
 - Tier 2 workloads: **4** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`, `13-large-monolith`). All four run through the same engine, `tools/run_tier2_experiment.py` with `tools/loadgen`, and each declares its contract in `benchmarks/<id>/tier2.json`.
 - Calibration on this host (not a benchmark): 01, 09 and 12 complete two repetitions with zero request errors, identity verified and warm-up stable. 13 completed a five-second calibration repetition at 50 req/s with zero errors. Every envelope is `measurement_valid: false`, because the host fails preflight (the CPU governor is not observable here, and this sandbox injects `JAVA_TOOL_OPTIONS`) and because the calibration run kind is not a benchmark.
