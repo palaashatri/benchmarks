@@ -1,5 +1,7 @@
 package com.palaashatri.bench.b09.app;
 
+import com.palaashatri.bench.common.RuntimeInfo;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
@@ -50,6 +52,7 @@ public final class MiniHttpServer implements AutoCloseable {
         server.createContext("/api/v1/inference/classify", this::classify);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
+        RuntimeInfo.publishPort(server.getAddress().getPort());
         System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"mode\":\"%s\",\"port\":%d,\"pid\":%d}%n",
                 BENCHMARK, engine.mode(), port(), ProcessHandle.current().pid());
     }
@@ -81,11 +84,7 @@ public final class MiniHttpServer implements AutoCloseable {
     }
 
     private void runtime(HttpExchange exchange) throws IOException {
-        json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid()
-                + ",\"run_token\":\"" + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", "")) + "\""
-                + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
-                + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\""
-                + ",\"mode\":\"" + engine.mode() + "\"}");
+        json(exchange, 200, RuntimeInfo.json());
     }
 
     private void metrics(HttpExchange exchange) throws IOException {

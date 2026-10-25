@@ -69,7 +69,7 @@ Items 1, 2 and 4 need controlled hardware or a live environment. Items 3, 5, 6 a
 2. **Calibrate the provisional thresholds on that host.** These are the latency stability threshold and the warm-up window length, both set without hardware data.
 3. **Foojay as a source** stays opt-in (`fetch-jdks --source foojay`). Its checksums are not signed, and its live endpoint has not been reachable from this sandbox.
 4. **Tier 3 publication** of controlled-environment results, once they pass every gate. Until then, no publication claims.
-5. **Smoke output still carries KPIs in 00, 01 and 09.** Their functional harnesses emit the legacy envelope. 00 must stay Java 8 compatible, so it needs its own port publication and identity instead of `common`. 01 and 09 need their classpath made absolute for the shared test. Until then the controller nulls the untrusted KPIs.
+5. **Smoke output still carries KPIs in 00 and 01.** Their functional harnesses emit the legacy envelope. 00 must stay Java 8 compatible, so it needs its own port publication and identity instead of `common`. 01 needs its classpath made absolute for the shared test. Until then the controller nulls the untrusted KPIs.
 6. **Controller lanes for startup and jobs.** 07 measures child-JVM starts and 08 measures batch jobs. Neither fits the request-based Tier 2 engine; both need a controller lane that restarts or submits per sample before their numbers can be valid.
 7. **Multi-process telemetry for 02, 10 and 11.** Their children are separate JVMs, and the Tier 2 engine measures one process. Each needs a per-process telemetry definition before it can be Tier 2.
 

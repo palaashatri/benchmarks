@@ -8,7 +8,7 @@ SOURCES_FILE="build/run-sh/sources.txt"
 
 compile() {
   mkdir -p "$CLASSES_DIR"
-  find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
+  find src/main/java ../../common/src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
   javac --release 17 -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 run() { compile; exec java -cp "$CLASSES_DIR" "$MAIN_CLASS" "$@"; }
