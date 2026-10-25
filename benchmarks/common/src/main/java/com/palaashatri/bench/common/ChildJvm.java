@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -42,6 +43,15 @@ public final class ChildJvm implements AutoCloseable {
 
     /** The timeout includes port discovery and the process-identity handshake. */
     public static ChildJvm start(String mainClass, String role, String runToken, Map<String, String> variables, Duration timeout) throws IOException {
+        return start(mainClass, role, runToken, variables, List.of(), timeout);
+    }
+
+    /**
+     * As {@link #start(String, String, String, Map, Duration)}, with the child's own JVM options. The
+     * options precede the classpath, so they can select a collector, a CDS archive or a shared-class mode.
+     */
+    public static ChildJvm start(String mainClass, String role, String runToken, Map<String, String> variables,
+                                 List<String> jvmOptions, Duration timeout) throws IOException {
         Path directory = Files.createTempDirectory("bench-child-");
         ChildJvm child = null;
         try {
@@ -49,6 +59,7 @@ public final class ChildJvm implements AutoCloseable {
             var command = new ArrayList<String>();
             command.add(RuntimeInfo.javaExecutable().toString());
             command.add("-Xms16m"); command.add("-Xmx128m");
+            command.addAll(jvmOptions);
             command.add("-cp"); command.add(classPath(mainClass));
             command.add(mainClass); command.add("0");
             ProcessBuilder builder = new ProcessBuilder(command);
@@ -123,12 +134,18 @@ public final class ChildJvm implements AutoCloseable {
     }
 
     /** Idempotently terminate, forcibly terminate if needed, reap and remove files. */
-    @Override public void close() {
+    @Override public void close() { stop(Duration.ofSeconds(2)); }
+
+    /**
+     * Terminate the child, allowing {@code grace} for a clean exit before forcing it. A child that writes
+     * state on exit (for example a dynamic CDS archive) needs a longer grace than {@link #close()} allows.
+     */
+    public void stop(Duration grace) {
         if (!closed.compareAndSet(false, true)) return;
         boolean interrupted = Thread.interrupted();
         process.destroy();
         try {
-            if (!process.waitFor(2, TimeUnit.SECONDS)) {
+            if (!process.waitFor(grace.toMillis(), TimeUnit.MILLISECONDS)) {
                 process.destroyForcibly();
                 process.waitFor(2, TimeUnit.SECONDS);
             }

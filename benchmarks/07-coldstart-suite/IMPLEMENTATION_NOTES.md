@@ -1,102 +1,84 @@
-# Implementation Notes — Benchmark 07: Coldstart Suite
+# Implementation Notes — Benchmark 07: Cold-start suite
 
-## What was implemented
+## What it measures
 
-### app/src/main/java/.../MiniHttpServer.java (replaced)
+Process-to-health time of child JVMs under three class-sharing modes:
 
-The stub server was replaced with a startup-measurement server that:
+| Mode | Child JVM option | Meaning |
+|---|---|---|
+| `default` | `-Xshare:auto` | the JDK's own class-data archive |
+| `no-cds` | `-Xshare:off` | class sharing disabled |
+| `appcds` | `-XX:SharedArchiveFile=<archive> -Xshare:on` | a dynamic AppCDS archive of this application's classes |
 
-- Tracks JVM start time via `ManagementFactory.getRuntimeMXBean().getStartTime()` (epoch ms).
-- Records `startedAtNano` at constructor time and `firstRequestNano` on the very first request
-  using an `AtomicLong` CAS so it is thread-safe and captured exactly once.
-- Maintains a 60-slot circular buffer (`AtomicLong[] perSecondCounts` + `long[] secondTimestamps`)
-  for per-second throughput tracking used by `/api/v1/warmup`.
-- Uses `Executors.newVirtualThreadPerTaskExecutor()` for the HTTP server executor.
-- Routes:
-  - `GET /health`, `GET /actuator/health` — uptime, startup timing, JIT compilation ms, JVM uptime.
-  - `GET /metrics`, `GET /actuator/prometheus` — Prometheus text with `jvm_startup_ms`,
-    `jvm_compilation_ms_total`, `benchmark_requests_total`, `jvm_loaded_classes`,
-    `jvm_available_processors`.
-  - `GET /api/v1/jfr/stats` — JSON with CompilationMXBean and ClassLoadingMXBean data.
-  - `POST /api/v1/coldstart/measure` — spawns a child JVM via `ProcessBuilder` on port 18070,
-    polls `http://localhost:18070/health` every 100ms for up to 10s, measures time-to-first-response,
-    then `destroyForcibly()` in `finally` block. Returns `{"time_to_first_response_ms":-1,"error":"timeout"}`
-    on timeout, or `{"time_to_first_response_ms":N}` on success.
-  - `GET /api/v1/warmup` — returns last 60 seconds of per-second RPS from the circular buffer.
-  - Catch-all `/` — increments counter, returns 404 JSON.
+The clock starts when the parent spawns the child and stops when the child's `/runtime` reports the
+token, role and pid the parent issued. The child's JVM options are read back from its own `/runtime`
+and returned with each measurement, so the flags in a result come from the launched process.
 
-### harness/src/main/java/.../BenchmarkHarness.java (replaced)
+`-Xshare:on` is used for `appcds` deliberately: an archive the child cannot use fails the child
+(HTTP 500) instead of silently falling back to a plain start.
 
-Key changes from the stub:
+## How it is built
 
-- Weighted `REQUESTS` array: GET /health x4, GET /api/v1/jfr/stats x3, GET /metrics x2,
-  POST /api/v1/coldstart/measure x1.
-- Concurrent execution via `Executors.newFixedThreadPool(threads)` + `CountDownLatch`.
-- `--threads` (default 8) and `--runs` (default 3) CLI args.
-- Wall-clock throughput: `requestCount / wallElapsedSeconds` (not sum of latencies).
-- Circuit breaker for `/api/v1/coldstart/measure`: opens for 30 seconds on failure,
-  substitutes with `GET /health` while open.
-- Extended timeout (15s) for coldstart endpoint vs 5s for others.
-- Runtime metric collection:
-  - GC pause ms via `ManagementFactory.getGarbageCollectorMXBeans()`.
-  - RSS via `ps -o rss= -p <pid>` (KB -> MB), graceful on failure.
-  - CPU via `com.sun.management.OperatingSystemMXBean.getProcessCpuLoad()`.
-- `mode_kpis`: `time_to_first_response_ms`, `time_to_90pct_s`, `compiled_methods`.
-- `Result.toJson()` produces valid JSON matching the suite schema.
+- The application runs from `build/run-sh/app.jar`. The JVM only archives classes from JARs for
+  AppCDS, and children inherit the parent's classpath. A directory classpath fails with
+  "non-empty directory".
+- At startup, the top-level application (no `BENCH_SERVICE_ROLE`) does three things before it
+  listens:
+  1. probes the default archive with `java -Xshare:on -version`;
+  2. starts a training child with `-XX:ArchiveClassesAtExit`, waits for readiness, then stops it with
+     SIGTERM and a 60-second grace so the archive is written;
+  3. records the archive's build time and size. Each mode's availability is recorded, not assumed.
+- Children are started with the shared `ChildJvm` (`benchmarks/common`), which verifies pid, token and
+  role on readiness and reaps the child. This workload added two overloads to it: JVM options, and
+  `stop(grace)` for children that write state on exit.
+- Measurements are serialised: one child at a time, so children do not compete for CPU with each
+  other.
+- Child processes are started with `Xms16m Xmx128m` for all modes, so the heap is the same in each.
+- The AppCDS archive lives in a temporary directory removed by a shutdown hook. Not left behind on
+  SIGTERM; a SIGKILL cannot run hooks.
 
-### harness/docker-compose.yml (updated)
+## Routes
 
-Added Grafana provisioning volume mounts so datasources and dashboards are auto-wired:
-```
-./grafana/provisioning:/etc/grafana/provisioning:ro
-./grafana/dashboards:/var/lib/grafana/dashboards:ro
-```
+- `POST /api/v1/coldstart/measure` with `{"mode": "default|no-cds|appcds"}` (an empty body means
+  `default`; any other mode is `400`). Returns the time, the child's pid, and its `/runtime` identity
+  with JVM arguments.
+- `GET /api/v1/coldstart/modes` — each mode's JVM options, probed availability and reason, and the
+  AppCDS archive size and build time.
+- `GET /api/v1/coldstart/samples` — the times measured per mode, in the order taken, with failure
+  counts. The harness does not compute these; the application keeps them.
+- `GET /runtime`, `GET /health`, `GET /metrics`, `GET /api/v1/jfr/stats`.
 
-### harness/grafana/provisioning/datasources/prometheus.yaml (created)
+## Tests
 
-Auto-provisions Prometheus datasource at `http://prometheus:9090` as default.
+- `app/run.sh test` starts the app from its JAR and checks: all three modes are available; each mode
+  is measured; each child reports the expected `-Xshare` flag; the AppCDS child reports its
+  `-XX:SharedArchiveFile`; an unknown mode is rejected; and one sample per mode is recorded.
+- `harness/run.sh test` runs the shared functional client against the app. Any failed request fails
+  the gate.
 
-### harness/grafana/provisioning/dashboards/dashboards.yaml (created)
+## Validity
 
-Auto-provisions dashboards from `/var/lib/grafana/dashboards`.
+This lane is **Tier 1 and not a benchmark**. It exercises the three modes, but the measurements do
+not yet meet the validity gates:
 
-### harness/grafana/dashboards/dashboard.json (updated)
+- no host preflight: the governor is not observable in the sandbox, and the parent runs on an
+  uncontrolled host;
+- no page-cache control: a cold page cache needs root, so each start is warm in the page cache;
+- no repetition statistics: a startup benchmark needs many starts per mode, with dispersion and
+  outlier reporting. The controller has no lane that starts and stops the application per sample.
 
-Real Grafana 10 dashboard (uid `07-coldstart`, title `07 Coldstart Suite`) with 4 panels:
-1. JVM Startup Time — `jvm_startup_ms` timeseries.
-2. JIT Compilation Rate — `rate(jvm_compilation_ms_total[1m])` timeseries.
-3. Request Throughput — `rate(benchmark_requests_total[1m])` timeseries.
-4. Loaded Classes — `jvm_loaded_classes` gauge panel with thresholds.
+A sandbox check during implementation found that AppCDS children started faster than
+default-archive children. Those numbers were not recorded as results.
 
-## External dependencies added
+## Limits
 
-None. Uses only JDK 21 built-ins:
-- `java.lang.management.ManagementFactory`, `CompilationMXBean`, `ClassLoadingMXBean`
-- `com.sun.net.httpserver.HttpServer`
-- `java.net.http.HttpClient` (Java 11+)
-- `java.lang.ProcessBuilder`, `ProcessHandle`
-- `java.util.concurrent.*`
-
-## Smoke test result
-
-PASS. Running `REQUESTS=20 ./run.sh test` from the harness directory produces:
-
-```json
-{"benchmark":"07-coldstart-suite","runtime":"openjdk-hotspot-21","gc":"G1",
- "jvm_flags":["-XX:+UseG1GC"],"env":{"cpu":"12","kernel":"26.5.1",
- "cgroup_cpu":"unknown","cgroup_mem":"unknown"},"load_profile":"cold",
- "phases":{"warmup_s":0,"measure_s":0},
- "kpis":{"throughput":61.456,"p50_ms":2,"p99_ms":271,"p999_ms":271,"p9999_ms":271,
- "gc_pause_p99_ms":0,"alloc_rate_mb_s":0,"rss_mb":108,"native_mem_mb":0,"cpu_util_pct":0.00},
- "mode_kpis":{"time_to_first_response_ms":0,"time_to_90pct_s":0,"compiled_methods":245}}
-```
-
-## Deviations from spec
-
-- `MiniHttpServer` constructor was updated from `(String benchmark, String title)` to
-  `(String benchmark)` — the `title` parameter was unused by any route logic, and the
-  BenchmarkApp.java callsites were updated accordingly.
-- `HttpTimeoutException` is a subclass of `IOException`, so the multi-catch was collapsed
-  to a single `IOException` catch to satisfy `javac --release 21`.
-- The `/api/v1/coldstart/measure` endpoint returns HTTP 200 with `time_to_health_ms` when the child JVM reports ready, and HTTP 500 with `child_start_failed` otherwise;
-  consistent with the circuit breaker not needing to trip on schema-valid error responses.
+- The command-line `invoke` functions (`json-transform`, `thumbnail-stub`, `crud-tiny`,
+  `lightweight-infer`) are synthetic and are not part of any measurement.
+- `ChildJvm` polls readiness every 20 ms, so each time has that granularity.
+- Parent-process figures (`/api/v1/jfr/stats`) describe the application, not the children. They are
+  never mixed into a child measurement.
+- A SIGKILLed application leaves its child temporary directories behind. Children exit when their
+  parent's stdin closes, but the parent cannot remove files after SIGKILL. The shared
+  `tools/workload_tests/test_architecture.py` stops applications with `kill()`, and its forced-exit
+  test does so on purpose, so `bench-child-*` directories accumulate in the system temporary
+  directory after those tests. This is a known gap in the shared test helper, not in this workload.

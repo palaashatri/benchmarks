@@ -63,7 +63,7 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "isolated process-to-health prototype without CDS matrix"
+      "status": "child-JVM process-to-health under the default class-data archive, with CDS off and with a dynamic AppCDS archive; each mode probed and reported, measured one child at a time; not yet a controller startup benchmark"
     },
     {
       "id": "08-etl-batch",
