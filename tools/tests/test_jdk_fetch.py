@@ -138,7 +138,7 @@ class JdkFetchTests(unittest.TestCase):
     def test_non_openjdk_distribution_is_refused_before_any_request(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(jdk_fetch.FetchError, "not an allowed OpenJDK HotSpot source"):
-                jdk_fetch.install_jdk(21, "graalvm", Path(tmp), "http://127.0.0.1:9/unreachable")
+                jdk_fetch.install_jdk(21, "unlisted-vendor", Path(tmp), "http://127.0.0.1:9/unreachable")
 
     def test_no_matching_package_is_an_error(self):
         with FakeFoojay(make_archive(jdk_members()), listing=[]) as fake, tempfile.TemporaryDirectory() as tmp:

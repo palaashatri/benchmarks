@@ -142,7 +142,24 @@ jobs:
             (cd "benchmarks/$workload/harness" && ./run.sh test)
           done
 
-  workload-native-builds:
+  maven-workloads:
+    strategy:
+      fail-fast: false
+      matrix:
+        workload:
+          - 01-fintech-ledger
+          - 02-microservices-mesh
+          - 03-streaming-analytics
+          - 04-ml-inference-panama-vector
+          - 05-polyglot-service
+          - 06-massive-chat-loom
+          - 07-coldstart-suite
+          - 08-etl-batch
+          - 09-onnx-inference
+          - 10-microservices-fleet
+          - 11-autoscaling-burst
+          - 12-hft-trading-gateway
+          - 13-large-monolith
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,21 +167,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.14.3'
-      - name: Gradle source wiring and correctness tasks
-        run: |
-          for workload in 02-microservices-mesh 06-massive-chat-loom; do
-            gradle --no-daemon -p "benchmarks/$workload/app" test
-            gradle --no-daemon -p "benchmarks/$workload/harness" test
-          done
-      - name: Maven source wiring and correctness lifecycle
-        run: |
-          for workload in 10-microservices-fleet 11-autoscaling-burst 12-hft-trading-gateway; do
-            mvn -B -f "benchmarks/$workload/app/pom.xml" test
-            mvn -B -f "benchmarks/$workload/harness/pom.xml" test
-          done
+      # Every workload builds with its own Maven wrapper, pinned to Maven 3.9.11 and
+      # verified by SHA-256. `mvn test` runs the workload's correctness gates.
+      - name: Application lifecycle
+        run: cd "benchmarks/${{ matrix.workload }}/app" && ./mvnw -B test
+      - name: Harness lifecycle
+        run: cd "benchmarks/${{ matrix.workload }}/harness" && ./mvnw -B test

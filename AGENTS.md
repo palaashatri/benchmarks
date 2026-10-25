@@ -21,10 +21,12 @@ Controller (Python 3.12, standard library only):
 ```bash
 python3 -m unittest discover -s tools/tests -v
 python3 tools/check_repository.py                # repository hygiene and scope gate
-./benchctl validate experiments/quick.yaml       # also standard.yaml, gc-focused.yaml, ledger-benchmark.yaml
+./benchctl validate experiments/quick.yaml       # also standard.yaml, gc-focused.yaml, ledger-benchmark.yaml, tier2-workloads.yaml
 ./benchctl doctor && ./benchctl discover-runtimes && ./benchctl list-runtimes
-./benchctl plan experiments/ledger-benchmark.yaml
-./benchctl run experiments/ledger-benchmark.yaml # real Tier 2 run; needs a quiet machine to mean anything
+./benchctl fetch-jdks --feature 21               # verified OpenJDK HotSpot builds into .benchctl/jdks
+./benchctl preflight                             # quiet-machine checks; a Tier 2 run is invalid if these fail
+./benchctl plan experiments/tier2-workloads.yaml
+./benchctl run experiments/tier2-workloads.yaml  # real Tier 2 runs; needs a quiet machine to mean anything
 ```
 
 Workloads (each `app/` and `harness/` is an independent project):
@@ -33,8 +35,8 @@ Workloads (each `app/` and `harness/` is an independent project):
 (cd benchmarks/<NN-name>/app && ./run.sh test)      # correctness/contract smoke
 (cd benchmarks/<NN-name>/harness && ./run.sh test)
 bash tools/workload_tests/run_common.sh              # shared lifecycle + framed-TCP regressions (benchmarks/common)
-gradle --no-daemon -p benchmarks/<NN-name>/app test  # workloads 01–08 (Gradle Kotlin DSL; CI uses Gradle 8.14.3)
-mvn -B -f benchmarks/<NN-name>/app/pom.xml test      # workloads 09–13 (Maven)
+(cd benchmarks/<NN-name>/app && ./mvnw -B test)     # every workload; Maven 3.9.11 wrapper, distribution SHA-256 pinned
+(cd benchmarks/<NN-name>/harness && ./mvnw -B test)  # every harness
 ```
 
 `run.sh` scripts compile with plain `javac` and download pinned jars from Maven Central with `curl`. They are smoke entry points; authoritative orchestration goes through `benchctl`. The experiment files are JSON written with a `.yaml` extension (JSON is valid YAML), so the controller needs no YAML library.
@@ -69,7 +71,7 @@ mvn -B -f benchmarks/<NN-name>/app/pom.xml test      # workloads 09–13 (Maven)
 - Never apply a JVM flag or collector without probing that the runtime supports it. Plan JDK/GC combinations from discovered capabilities and each workload's `min_jdk`/`max_jdk`.
 - Child JVMs (`benchmarks/common`): bind loopback only, use ephemeral ports, verify PID + run token + role on readiness, set heap explicitly, and always reap children and temp files on failure or shutdown. Shared code must compile on Java 17.
 - Pin every dependency and tool version. Never commit build outputs, downloaded jars, logs, PIDs, JFRs or results.
-- A command called `test` must run tests. Don't fake a Gradle wrapper with a `javac` script.
+- A command called `test` must run tests. Every workload's `mvn test` runs its `run.sh test` gates, so the Maven lifecycle is the authoritative check.
 - Executable scripts (`benchctl`, `run.sh`, `tools/**/*.sh`) must keep their executable bit in git (`git update-index --chmod=+x`); CI calls them directly.
 - Don't add `CLAUDE.md`/`STATUS.md`-style files; the hygiene check rejects them. Status belongs in `IMPLEMENTATION_STATUS.md` and `catalog.json`.
 
