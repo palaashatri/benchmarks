@@ -21,7 +21,8 @@ public final class RuntimeInfo {
                 "role", role(), "java_version", System.getProperty("java.version"),
                 "vm_name", System.getProperty("java.vm.name"),
                 "collectors", ManagementFactory.getGarbageCollectorMXBeans().stream().map(java.lang.management.GarbageCollectorMXBean::getName).toList(),
-                "java_executable", javaExecutable().toString(), "jvm_args", ManagementFactory.getRuntimeMXBean().getInputArguments()));
+                "java_executable", javaExecutable().toString(), "jvm_args", ManagementFactory.getRuntimeMXBean().getInputArguments(),
+                "child_processes", ChildJvm.describeLive()));
     }
     public static void publishPort(int port) throws IOException {
         String name = System.getenv("BENCH_PORT_FILE");

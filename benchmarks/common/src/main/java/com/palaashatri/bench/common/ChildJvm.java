@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -59,6 +60,7 @@ public final class ChildJvm implements AutoCloseable {
             var command = new ArrayList<String>();
             command.add(RuntimeInfo.javaExecutable().toString());
             command.add("-Xms16m"); command.add("-Xmx128m");
+            command.addAll(inheritedJvmOptions());
             command.addAll(jvmOptions);
             command.add("-cp"); command.add(classPath(mainClass));
             command.add(mainClass); command.add("0");
@@ -83,6 +85,28 @@ public final class ChildJvm implements AutoCloseable {
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new IOException("child " + role + " readiness failed: " + failure.getMessage() + "\n" + logs, failure);
         }
+    }
+
+    /**
+     * JVM options that the parent passes to every child it starts, read from {@code BENCH_CHILD_JVM_OPTIONS}
+     * (a JSON object with an {@code options} array). The engine uses this to give each child its own GC log,
+     * so process-tree telemetry covers the children as well as the gateway.
+     */
+    static List<String> inheritedJvmOptions() {
+        String text = System.getenv("BENCH_CHILD_JVM_OPTIONS");
+        if (text == null || text.isBlank()) return List.of();
+        Object options = Json.parseObject(text).get("options");
+        List<String> result = new ArrayList<>();
+        if (options instanceof List<?> items) {
+            for (Object item : items) result.add(String.valueOf(item));
+        }
+        return result;
+    }
+
+    /** Identity of every child this process still owns, so the parent's /runtime can list its children. */
+    public static List<Map<String, Object>> describeLive() {
+        return LIVE.stream().filter(ChildJvm::alive).map(ChildJvm::identity)
+                .sorted(Comparator.comparingLong(item -> ((Number) item.get("pid")).longValue())).toList();
     }
 
     private static String classPath(String mainClass) throws Exception {

@@ -38,6 +38,10 @@ final class Report {
         {"compiled_methods", "Compiled methods", "count"},
         {"compiler_time_seconds", "Compiler time", "s"},
         {"jfr_allocation_sample_rate_mb_s", "Allocation rate (JFR)", "MiB/s"},
+        {"process_tree_process_count_max", "Process tree: most processes at once", "count"},
+        {"process_tree_rss_mb_max", "Process tree: peak RSS", "MiB"},
+        {"process_tree_cpu_pct_one_core_mean", "Process tree: CPU (one-core mean)", "%"},
+        {"process_tree_gc_pause_p99_ms", "Process tree: GC pause p99 (all JVMs)", "ms"},
     };
 
     private static final String CSS = """

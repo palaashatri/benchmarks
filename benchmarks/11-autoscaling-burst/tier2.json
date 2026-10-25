@@ -4,6 +4,7 @@
   "main_class": "com.palaashatri.bench.b11.app.BenchmarkApp",
   "token_prefix": "burst",
   "identity_path": "/runtime",
+  "telemetry_scope": "process-tree",
   "load_mix": "app/contract/load-mix.tsv",
   "correctness": [
     "maven",

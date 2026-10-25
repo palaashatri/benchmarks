@@ -6,10 +6,13 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -47,8 +50,15 @@ public final class Telemetry {
         }
     }
 
+    /** What the engine needs from a sampler: start it before load, stop it after, and read its summary. */
+    public interface ProcessSampling {
+        void start();
+
+        Map<String, Object> stop();
+    }
+
     /** Samples one process on its own thread until stopped. Sampling never terminates the measured process. */
-    public static final class Sampler {
+    public static final class Sampler implements ProcessSampling {
         private final long pid;
         private final Path output;
         private final Duration interval;
@@ -130,6 +140,158 @@ public final class Telemetry {
             Long rss = status.containsKey("rss") ? status.get("rss") : ProcessMemory.residentBytes(pid);
             return Optional.of(new Sample(System.currentTimeMillis() * 1_000_000L, onePercent, hostPercent, rss,
                     status.get("rss_high_water"), status.get("threads")));
+        }
+    }
+
+    /**
+     * Samples a process and every live descendant on one thread. Children are found through the process tree, not
+     * through the workload, so a child the workload does not report still appears. Each tick records every process
+     * at the same instant, so the totals across the tree describe one moment.
+     */
+    public static final class TreeSampler implements ProcessSampling {
+        private final long rootPid;
+        private final Path output;
+        private final Duration interval;
+        private final int logicalCpus = Math.max(1, Runtime.getRuntime().availableProcessors());
+        private final Map<Long, List<Sample>> samples = new ConcurrentHashMap<>();
+        private final Map<Long, Duration> lastCpu = new HashMap<>();
+        private final Map<Long, Long> lastNanos = new HashMap<>();
+        private final List<Integer> processCounts = new CopyOnWriteArrayList<>();
+        private final List<Double> treeRss = new CopyOnWriteArrayList<>();
+        private final List<Double> treeCpu = new CopyOnWriteArrayList<>();
+        private final StringBuilder lines = new StringBuilder();
+        private volatile boolean running = true;
+        private Thread thread;
+        private Map<String, Object> treeSummary = Map.of();
+
+        public TreeSampler(long rootPid, Path output, Duration interval) {
+            this.rootPid = rootPid;
+            this.output = output;
+            this.interval = interval;
+        }
+
+        @Override
+        public void start() {
+            thread = new Thread(this::run, "process-tree-sampler-" + rootPid);
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        /** Stops sampling, writes every per-process sample and returns the root process's summary. */
+        @Override
+        public Map<String, Object> stop() {
+            running = false;
+            if (thread != null) {
+                try {
+                    thread.join(Math.max(5_000, interval.toMillis() * 10));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            try {
+                Files.createDirectories(output.getParent());
+                Files.writeString(output, lines.toString(), StandardCharsets.UTF_8);
+            } catch (IOException exception) {
+                throw new BenchError("cannot write " + output + ": " + exception.getMessage(), exception);
+            }
+            treeSummary = summarizeTree();
+            return summarize(samples.getOrDefault(rootPid, List.of()), logicalCpus);
+        }
+
+        /** Totals and per-process summaries for the whole tree. Valid after {@link #stop()}. */
+        public Map<String, Object> treeSummary() {
+            return treeSummary;
+        }
+
+        private void run() {
+            while (running) {
+                tick();
+                try {
+                    Thread.sleep(interval.toMillis());
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+
+        private void tick() {
+            Optional<ProcessHandle> root = ProcessHandle.of(rootPid).filter(ProcessHandle::isAlive);
+            if (root.isEmpty()) {
+                return;
+            }
+            long now = System.nanoTime();
+            List<ProcessHandle> handles = new ArrayList<>();
+            handles.add(root.get());
+            root.get().descendants().filter(ProcessHandle::isAlive).forEach(handles::add);
+            double rssTotal = 0;
+            double cpuTotal = 0;
+            boolean anyRss = false;
+            boolean anyCpu = false;
+            for (ProcessHandle handle : handles) {
+                Sample sample = sample(handle, now);
+                samples.computeIfAbsent(handle.pid(), key -> new CopyOnWriteArrayList<>()).add(sample);
+                Map<String, Object> line = new LinkedHashMap<>(sample.toJson());
+                line.put("pid", handle.pid());
+                lines.append(Json.write(line)).append('\n');
+                if (sample.rssBytes() != null) {
+                    rssTotal += sample.rssBytes();
+                    anyRss = true;
+                }
+                if (sample.cpuPercentOneCore() != null) {
+                    cpuTotal += sample.cpuPercentOneCore();
+                    anyCpu = true;
+                }
+            }
+            processCounts.add(handles.size());
+            treeRss.add(anyRss ? rssTotal : null);
+            treeCpu.add(anyCpu ? cpuTotal : null);
+        }
+
+        private Sample sample(ProcessHandle handle, long now) {
+            long pid = handle.pid();
+            Duration cpu = handle.info().totalCpuDuration().orElse(null);
+            Double onePercent = null;
+            Double hostPercent = null;
+            Duration previousCpu = lastCpu.get(pid);
+            Long previousNanos = lastNanos.get(pid);
+            if (cpu != null && previousCpu != null && previousNanos != null && now > previousNanos) {
+                double elapsed = (now - previousNanos) / 1e9;
+                onePercent = Math.max(0.0, (cpu.toNanos() - previousCpu.toNanos()) / 1e9 / elapsed * 100.0);
+                hostPercent = onePercent / logicalCpus;
+            }
+            if (cpu != null) {
+                lastCpu.put(pid, cpu);
+                lastNanos.put(pid, now);
+            }
+            Map<String, Long> status = LinuxProcessStatus.read(pid);
+            Long rss = status.containsKey("rss") ? status.get("rss") : ProcessMemory.residentBytes(pid);
+            return new Sample(System.currentTimeMillis() * 1_000_000L, onePercent, hostPercent, rss,
+                    status.get("rss_high_water"), status.get("threads"));
+        }
+
+        private Map<String, Object> summarizeTree() {
+            List<Long> pids = samples.keySet().stream().sorted().toList();
+            List<Long> children = pids.stream().filter(pid -> pid != rootPid).toList();
+            List<Map<String, Object>> perProcess = new ArrayList<>();
+            for (long pid : pids) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("pid", pid);
+                entry.put("role", pid == rootPid ? "root" : "child");
+                entry.putAll(summarize(samples.get(pid), logicalCpus));
+                perProcess.add(entry);
+            }
+            List<Double> rss = treeRss.stream().filter(value -> value != null).toList();
+            List<Double> cpu = treeCpu.stream().filter(value -> value != null).toList();
+            return Json.map(
+                    "root_pid", rootPid,
+                    "observed_child_pids", children,
+                    "process_count_max", processCounts.isEmpty() ? null
+                            : processCounts.stream().mapToInt(Integer::intValue).max().getAsInt(),
+                    "rss_bytes_max_total", rss.isEmpty() ? null
+                            : (long) rss.stream().mapToDouble(Double::doubleValue).max().getAsDouble(),
+                    "cpu_one_core_mean_total", Stats.mean(cpu),
+                    "per_process", perProcess);
         }
     }
 

@@ -17,7 +17,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -56,13 +63,26 @@ public final class Tier2 {
     public record Workload(String id, Path directory, Path appDirectory, String mainClass, String tokenPrefix,
                            String identityPath, Path loadMix, List<String> correctness, List<String> build,
                            String classpathFile, List<String> classpathPrefix, List<String> jvmOptions,
-                           long minJdk, long maxJdk, String tier) {
+                           long minJdk, long maxJdk, String tier, String telemetryScope) {
     }
 
     public record Options(String javaHome, String loadgenJavaHome, String collector, double targetRate,
                           int warmupSeconds, int measureSeconds, int threads, int repetitions, long seed,
                           int heapMb, String runKind, String workloadId, Path output, boolean skipCorrectness,
                           List<String> extraJvmArguments) {
+    }
+
+    /**
+     * How telemetry covers the workload. A {@code process} workload is one measured JVM. A {@code process-tree}
+     * workload starts child JVMs (the gateway pattern of 02, 10 and 11) and samples every descendant of the
+     * application process.
+     */
+    static String telemetryScope(Map<String, Object> spec) {
+        String scope = spec.containsKey("telemetry_scope") ? string(spec, "telemetry_scope") : "process";
+        if (!Set.of("process", "process-tree").contains(scope)) {
+            throw new BenchError("telemetry_scope must be process or process-tree, not " + scope);
+        }
+        return scope;
     }
 
     public static Workload load(Repo repo, String workloadId) {
@@ -90,7 +110,7 @@ public final class Tier2 {
                 strings(spec.get("jvm_options")),
                 ((Number) entry.get("min_jdk")).longValue(),
                 ((Number) entry.get("max_jdk")).longValue(),
-                String.valueOf(entry.get("tier")));
+                String.valueOf(entry.get("tier")), telemetryScope(spec));
     }
 
     /** Parses the command line. Flags mirror the engine's documented options; every value has a stated default. */
@@ -260,6 +280,18 @@ public final class Tier2 {
                 + "-" + System.nanoTime());
         Map<String, String> environment = new HashMap<>(spec.environment());
         environment.put("BENCH_RUN_TOKEN", token);
+        boolean tree = "process-tree".equals(workload.telemetryScope());
+        Path childLogs = directory.resolve("telemetry/children");
+        if (tree) {
+            try {
+                Files.createDirectories(childLogs);
+            } catch (IOException exception) {
+                throw new BenchError("cannot create " + childLogs + ": " + exception.getMessage(), exception);
+            }
+            // Children inherit these options from the gateway, so each child writes its own GC log, named by pid.
+            environment.put("BENCH_CHILD_JVM_OPTIONS", Json.write(Map.of("options", List.of(
+                    "-Xlog:gc*:file=" + childLogs.resolve("gc-%p.log") + ":time,uptime,level,tags"))));
+        }
         Path gcLog = directory.resolve("gc.log");
         Path recording = directory.resolve("recording.jfr");
         List<String> jvmArguments = jvmArguments(spec, runtime, collector, gcLog, recording);
@@ -273,7 +305,9 @@ public final class Tier2 {
         command.add(workload.mainClass());
         command.add(Integer.toString(port));
 
-        Telemetry.Sampler sampler = null;
+        Telemetry.ProcessSampling sampler = null;
+        Map<String, Object> treeSummary = null;
+        List<Map<String, Object>> reportedChildren = List.of();
         String status = "failed";
         String failure = null;
         Map<String, Object> loadResult = null;
@@ -293,10 +327,16 @@ public final class Tier2 {
             builder.environment().putAll(environment);
             process = builder.start();
             applicationIdentity = waitForIdentity(port, process, token, workload.identityPath());
-            sampler = new Telemetry.Sampler(process.pid(), directory.resolve("process-samples.jsonl"),
-                    Duration.ofMillis(100));
+            sampler = tree
+                    ? new Telemetry.TreeSampler(process.pid(), directory.resolve("process-tree-samples.jsonl"),
+                            Duration.ofMillis(100))
+                    : new Telemetry.Sampler(process.pid(), directory.resolve("process-samples.jsonl"),
+                            Duration.ofMillis(100));
             sampler.start();
             loadResult = generateLoad(spec, port, directory);
+            if (tree) {
+                reportedChildren = childProcessesOf(port);
+            }
             warmupCheck = Stats.warmupStability(doubles(at(loadResult, "series", "completed")),
                     spec.options().warmupSeconds());
             latencyCheck = Stats.warmupStability(doubles(at(loadResult, "series", "p50_ms")),
@@ -313,15 +353,31 @@ public final class Tier2 {
         } finally {
             if (sampler != null) {
                 processSummary = sampler.stop();
+                if (sampler instanceof Telemetry.TreeSampler treeSampler) {
+                    treeSummary = treeSampler.treeSummary();
+                }
             }
             if (process != null) {
                 terminate(process);
+            }
+            if (treeSummary != null) {
+                awaitExit(pidsOf(treeSummary.get("observed_child_pids")));
             }
         }
 
         Path jfrJson = directory.resolve("jfr-events.json");
         Map<String, Object> jfrConversion = convertRecording(jfrTool, recording, jfrJson);
         String gcText = read(gcLog);
+        Map<String, Object> childGc = new LinkedHashMap<>();
+        List<Long> gcLogPids = new ArrayList<>();
+        StringBuilder pooledGc = new StringBuilder(gcText);
+        if (tree) {
+            for (Map.Entry<Long, String> child : childGcLogs(childLogs).entrySet()) {
+                childGc.put(Long.toString(child.getKey()), Telemetry.parseGcPauses(child.getValue()));
+                gcLogPids.add(child.getKey());
+                pooledGc.append('\n').append(child.getValue());
+            }
+        }
         String nmtText = read(directory.resolve("telemetry/jcmd-nmt.txt"));
         String codeCacheText = read(directory.resolve("telemetry/jcmd-code_cache.txt"));
         String compilerText = read(directory.resolve("telemetry/jstat-compiler.txt"));
@@ -339,6 +395,14 @@ public final class Tier2 {
         telemetry.put("jfr", Telemetry.parseJfr(jfrJson));
         telemetry.put("raw_jcmd", jcmdResults);
         telemetry.put("raw_jstat", jstatResults);
+        if (treeSummary != null) {
+            // Every JVM in the tree, pooled: the gateway's pauses and each child's own pauses. Per-child GC is kept too.
+            Map<String, Object> processTree = new LinkedHashMap<>(treeSummary);
+            processTree.put("gc", Telemetry.parseGcPauses(pooledGc.toString()));
+            processTree.put("child_gc", childGc);
+            processTree.put("gc_log_pids", gcLogPids);
+            telemetry.put("process_tree", processTree);
+        }
         writeJson(directory.resolve("telemetry.json"), telemetry);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -356,6 +420,7 @@ public final class Tier2 {
         result.put("load", loadResult);
         result.put("warmup_stability", warmupCheck);
         result.put("latency_stability", latencyCheck);
+        result.put("child_processes_reported", reportedChildren);
         result.put("telemetry", telemetry);
         writeJson(directory.resolve("result.json"), result);
         writeJson(directory.resolve("checksums.json"), Digest.tree(directory));
@@ -696,22 +761,7 @@ public final class Tier2 {
     static Validity validity(List<Map<String, Object>> repetitions, String runKind, Map<String, Object> preflight) {
         List<String> reasons = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        if (!"benchmark".equals(runKind)) {
-            reasons.add("run_kind is not benchmark");
-        }
-        if (preflight == null) {
-            reasons.add("host preflight was not recorded");
-        } else if (!Boolean.TRUE.equals(preflight.get("passed"))) {
-            for (Object failure : Json.asList(preflight.get("failures"))) {
-                reasons.add("host failed preflight: " + failure);
-            }
-        }
-        if (repetitions.size() < 5) {
-            reasons.add("at least five repetitions are required");
-        }
-        if (repetitions.stream().anyMatch(item -> !"passed".equals(item.get("status")))) {
-            reasons.add("one or more repetitions failed");
-        }
+        reasons.addAll(sharedReasons(runKind, repetitions, preflight));
         if (repetitions.stream().anyMatch(item -> !(item.get("load") instanceof Map))) {
             reasons.add("one or more repetitions lack load-generator output");
         }
@@ -750,11 +800,6 @@ public final class Tier2 {
         if (repetitions.stream().anyMatch(item -> !isZero(at(item, "telemetry", "jfr_conversion", "returncode")))) {
             reasons.add("JFR conversion failed");
         }
-        List<Map<String, Object>> environments = repetitions.stream()
-                .map(item -> criticalEnvironment(Json.asMap(item.get("environment")))).toList();
-        if (!environments.isEmpty() && environments.stream().anyMatch(item -> !item.equals(environments.get(0)))) {
-            reasons.add("critical environment fields changed between repetitions");
-        }
         List<Double> throughputs = repetitions.stream().filter(item -> item.get("load") instanceof Map)
                 .map(item -> Json.number(at(item, "load", "kpis", "throughput"))).filter(value -> value != null).toList();
         List<Double> p99 = repetitions.stream().filter(item -> item.get("load") instanceof Map)
@@ -772,14 +817,83 @@ public final class Tier2 {
                 reasons.add(String.format(java.util.Locale.ROOT, "p99 coefficient of variation exceeds 20%%: %.4f", cv));
             }
         }
+        for (Map<String, Object> repetition : repetitions) {
+            // Process-tree repetitions only: the children the gateway reports must be the ones the sampler saw, and
+            // every child the sampler saw must have written its own GC log.
+            Map<String, Object> tree = Json.asMap(at(repetition, "telemetry", "process_tree"));
+            if (tree.isEmpty()) {
+                continue;
+            }
+            List<Long> observed = pidsOf(tree.get("observed_child_pids"));
+            List<Long> logged = pidsOf(tree.get("gc_log_pids"));
+            if (observed.isEmpty()) {
+                reasons.add("no child JVM process was observed for a process-tree workload");
+            }
+            for (long pid : pidsOf(repetition.get("child_processes_reported"))) {
+                if (!observed.contains(pid)) {
+                    reasons.add("gateway-reported child pid " + pid + " was not observed by the process sampler");
+                }
+            }
+            for (long pid : observed) {
+                if (!logged.contains(pid)) {
+                    reasons.add("child JVM pid " + pid + " has no GC log");
+                }
+            }
+            warnings.add("child JVM NMT and JFR are not collected; process-tree telemetry covers CPU, RSS and GC pauses");
+        }
         if (repetitions.stream().anyMatch(item -> at(item, "telemetry", "jfr", "allocation_sample_weight_bytes") == null)) {
             warnings.add("JFR allocation samples were unavailable; allocation-rate KPI remains null");
+        }
+        return new Validity(reasons.isEmpty(), List.copyOf(new java.util.LinkedHashSet<>(reasons)),
+                List.copyOf(new java.util.LinkedHashSet<>(warnings)));
+    }
+
+    /** Largest coefficient of variation a lane's primary metric may show across its repetitions. Provisional. */
+    static final double LANE_MAX_CV = 0.10;
+
+    /**
+     * The gates every measurement shares, whether the Tier 2 engine or a lane produced it: the run kind, the host
+     * preflight, the repetition count and failures, and identical critical host state across repetitions.
+     */
+    static List<String> sharedReasons(String runKind, List<Map<String, Object>> repetitions, Map<String, Object> preflight) {
+        List<String> reasons = new ArrayList<>();
+        if (!"benchmark".equals(runKind)) {
+            reasons.add("run_kind is not benchmark");
+        }
+        if (preflight == null) {
+            reasons.add("host preflight was not recorded");
+        } else if (!Boolean.TRUE.equals(preflight.get("passed"))) {
+            for (Object failure : Json.asList(preflight.get("failures"))) {
+                reasons.add("host failed preflight: " + failure);
+            }
+        }
+        if (repetitions.size() < 5) {
+            reasons.add("at least five repetitions are required");
+        }
+        if (repetitions.stream().anyMatch(item -> !"passed".equals(item.get("status")))) {
+            reasons.add("one or more repetitions failed");
+        }
+        List<Map<String, Object>> environments = repetitions.stream()
+                .map(item -> criticalEnvironment(Json.asMap(item.get("environment")))).toList();
+        if (!environments.isEmpty() && environments.stream().anyMatch(item -> !item.equals(environments.get(0)))) {
+            reasons.add("critical environment fields changed between repetitions");
         }
         if (repetitions.isEmpty()) {
             reasons.add("no repetitions were produced");
         }
-        return new Validity(reasons.isEmpty(), List.copyOf(new java.util.LinkedHashSet<>(reasons)),
-                List.copyOf(new java.util.LinkedHashSet<>(warnings)));
+        return reasons;
+    }
+
+    /** A reason when a lane's primary metric varies too much across repetitions to report as stable, else null. */
+    static String spreadReason(String metric, List<Double> perRepetition) {
+        // A failed repetition contributes no value. It is reported by the repetition gate, never zeroed here.
+        List<Double> known = perRepetition.stream().filter(value -> value != null).toList();
+        Double cv = known.size() < 2 ? null : Stats.coefficientOfVariation(known);
+        if (cv == null || cv <= LANE_MAX_CV) {
+            return null;
+        }
+        return String.format(java.util.Locale.ROOT,
+                "%s coefficient of variation across repetitions exceeds 10%%: %.4f", metric, cv);
     }
 
     static Map<String, Object> criticalEnvironment(Map<String, Object> environment) {
@@ -808,6 +922,15 @@ public final class Tier2 {
         aggregate.put("compiled_methods", metric(values(repetitions, List.of("telemetry", "compiler", "compiled")), seed + 9));
         aggregate.put("compiler_time_seconds", metric(
                 values(repetitions, List.of("telemetry", "compiler", "time_seconds")), seed + 10));
+        // Process-tree totals describe every JVM the application started. They are null for single-process workloads.
+        aggregate.put("process_tree_rss_mb_max", metric(
+                scale(values(repetitions, List.of("telemetry", "process_tree", "rss_bytes_max_total"))), seed + 12));
+        aggregate.put("process_tree_cpu_pct_one_core_mean", metric(
+                values(repetitions, List.of("telemetry", "process_tree", "cpu_one_core_mean_total")), seed + 13));
+        aggregate.put("process_tree_gc_pause_p99_ms", metric(
+                values(repetitions, List.of("telemetry", "process_tree", "gc", "p99_ms")), seed + 14));
+        aggregate.put("process_tree_process_count_max", metric(
+                values(repetitions, List.of("telemetry", "process_tree", "process_count_max")), seed + 15));
         List<Double> allocationRates = new ArrayList<>();
         for (Map<String, Object> repetition : repetitions) {
             Object weight = at(repetition, "telemetry", "jfr", "allocation_sample_weight_bytes");
@@ -900,6 +1023,71 @@ public final class Tier2 {
             current = map.get(key);
         }
         return current;
+    }
+
+    private static final Pattern CHILD_GC_LOG = Pattern.compile("gc-(\\d+)\\.log");
+
+    /** The gateway's own list of live child processes, read from its /runtime identity. */
+    static List<Map<String, Object>> childProcessesOf(int port) {
+        try {
+            Map<String, Object> identity = Json.asMap(Json.parse(get("http://127.0.0.1:" + port + "/runtime")));
+            List<Map<String, Object>> children = new ArrayList<>();
+            for (Object item : Json.asList(identity.get("child_processes"))) {
+                children.add(Json.asMap(item));
+            }
+            return children;
+        } catch (IOException exception) {
+            throw new BenchError("cannot read the gateway's child processes: " + exception.getMessage(), exception);
+        }
+    }
+
+    /** Pids from a list of numbers or of maps with a numeric {@code pid}. Anything else is ignored. */
+    static List<Long> pidsOf(Object value) {
+        List<Long> pids = new ArrayList<>();
+        for (Object item : Json.asList(value)) {
+            Object pid = item instanceof Map<?, ?> map ? map.get("pid") : item;
+            if (pid instanceof Number number) {
+                pids.add(number.longValue());
+            }
+        }
+        return pids;
+    }
+
+    /** Children exit when the gateway stops. Waiting for them means their GC logs are complete before they are read. */
+    static void awaitExit(List<Long> pids) {
+        for (long pid : pids) {
+            Optional<ProcessHandle> handle = ProcessHandle.of(pid);
+            if (handle.isEmpty()) {
+                continue;
+            }
+            try {
+                handle.get().onExit().get(10, TimeUnit.SECONDS);
+            } catch (InterruptedException interruption) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (ExecutionException | TimeoutException ignored) {
+                // A child that outlives the wait is reported by the GC-log gate, not here.
+            }
+        }
+    }
+
+    /** GC logs that children wrote, keyed by the child's pid taken from the file name. */
+    static Map<Long, String> childGcLogs(Path directory) {
+        Map<Long, String> logs = new TreeMap<>();
+        if (!Files.isDirectory(directory)) {
+            return logs;
+        }
+        try (Stream<Path> files = Files.list(directory)) {
+            for (Path file : files.toList()) {
+                Matcher name = CHILD_GC_LOG.matcher(String.valueOf(file.getFileName()));
+                if (name.matches()) {
+                    logs.put(Long.parseLong(name.group(1)), read(file));
+                }
+            }
+        } catch (IOException exception) {
+            throw new BenchError("cannot read " + directory + ": " + exception.getMessage(), exception);
+        }
+        return logs;
     }
 
     private static long count(Object value) {
