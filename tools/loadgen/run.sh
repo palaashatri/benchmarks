@@ -9,13 +9,27 @@ SOURCES="$ROOT/build/sources.txt"
 HDR="$DEPS/HdrHistogram-2.2.2.jar"
 MAIN="com.palaashatri.bench.load.OpenLoopLedger"
 
+sha256_of() {
+  python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+
+# The jar is retried and accepted only when its SHA-256 matches the pin.
 fetch_dependency() {
   mkdir -p "$DEPS"
-  if [ ! -f "$HDR" ]; then
-    curl --fail --location --silent --show-error \
-      "https://repo1.maven.org/maven2/org/hdrhistogram/HdrHistogram/2.2.2/HdrHistogram-2.2.2.jar" \
-      --output "$HDR"
+  expected=22d1d4316c4ec13a68b559e98c8256d69071593731da96136640f864fa14fad8
+  if [ -f "$HDR" ] && [ "$(sha256_of "$HDR")" = "$expected" ]; then
+    return 0
   fi
+  partial="$HDR.partial"
+  curl --fail --location --silent --show-error --retry 6 --retry-all-errors \
+    "https://repo1.maven.org/maven2/org/hdrhistogram/HdrHistogram/2.2.2/HdrHistogram-2.2.2.jar" --output "$partial" \
+    || { rm -f "$partial"; echo "download failed: HdrHistogram 2.2.2" >&2; return 1; }
+  if [ "$(sha256_of "$partial")" != "$expected" ]; then
+    rm -f "$partial"
+    echo "sha256 mismatch for HdrHistogram 2.2.2" >&2
+    return 1
+  fi
+  mv "$partial" "$HDR"
 }
 
 compile() {

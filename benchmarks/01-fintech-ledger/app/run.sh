@@ -8,18 +8,38 @@ CLASSES_DIR="build/run-sh/classes"
 DEPS_DIR="build/run-sh/deps"
 SOURCES_FILE="build/run-sh/sources.txt"
 
+sha256_of() {
+  python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+
+# Downloads are retried and accepted only when the SHA-256 matches the pin.
 fetch() {
-  url="$1" destination="$2"
-  [ -f "$destination" ] || curl --fail --location --silent --show-error "$url" --output "$destination"
+  url="$1" destination="$2" expected="$3"
+  if [ -f "$destination" ] && [ "$(sha256_of "$destination")" = "$expected" ]; then
+    return 0
+  fi
+  partial="$destination.partial"
+  curl --fail --location --silent --show-error --retry 6 --retry-all-errors \
+    "$url" --output "$partial" || { rm -f "$partial"; echo "download failed: $url" >&2; return 1; }
+  if [ "$(sha256_of "$partial")" != "$expected" ]; then
+    rm -f "$partial"
+    echo "sha256 mismatch for $url" >&2
+    return 1
+  fi
+  mv "$partial" "$destination"
 }
 
 download_deps() {
   mkdir -p "$DEPS_DIR"
   base="https://repo1.maven.org/maven2"
-  fetch "$base/com/h2database/h2/2.2.224/h2-2.2.224.jar" "$DEPS_DIR/h2-2.2.224.jar"
-  fetch "$base/com/zaxxer/HikariCP/5.1.0/HikariCP-5.1.0.jar" "$DEPS_DIR/HikariCP-5.1.0.jar"
-  fetch "$base/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar" "$DEPS_DIR/slf4j-api-2.0.9.jar"
-  fetch "$base/org/slf4j/slf4j-simple/2.0.9/slf4j-simple-2.0.9.jar" "$DEPS_DIR/slf4j-simple-2.0.9.jar"
+  fetch "$base/com/h2database/h2/2.2.224/h2-2.2.224.jar" "$DEPS_DIR/h2-2.2.224.jar" \
+    b9d8f19358ada82a4f6eb5b174c6cfe320a375b5a9cb5a4fe456d623e6e55497
+  fetch "$base/com/zaxxer/HikariCP/5.1.0/HikariCP-5.1.0.jar" "$DEPS_DIR/HikariCP-5.1.0.jar" \
+    a47a6ee62379694ee52c30036f0931b72f9aee2a801d590341ed82bd839e2134
+  fetch "$base/org/slf4j/slf4j-api/2.0.9/slf4j-api-2.0.9.jar" "$DEPS_DIR/slf4j-api-2.0.9.jar" \
+    0818930dc8d7debb403204611691da58e49d42c50b6ffcfdce02dadb7c3c2b6c
+  fetch "$base/org/slf4j/slf4j-simple/2.0.9/slf4j-simple-2.0.9.jar" "$DEPS_DIR/slf4j-simple-2.0.9.jar" \
+    71f9c6de6dbaec2d10caa303faf08c5e749be53b242896c64c96b7c6bb6d62dc
 }
 
 classpath() {

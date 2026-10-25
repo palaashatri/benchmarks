@@ -8,13 +8,27 @@ DEPS_DIR="build/run-sh/deps"
 SOURCES_FILE="build/run-sh/sources.txt"
 RHINO_JAR="$DEPS_DIR/rhino-1.7.15.jar"
 
+sha256_of() {
+  python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+
+# The jar is retried and accepted only when its SHA-256 matches the pin.
 fetch_dependency() {
   mkdir -p "$DEPS_DIR"
-  if [ ! -f "$RHINO_JAR" ]; then
-    curl --fail --location --silent --show-error \
-      "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar" \
-      --output "$RHINO_JAR"
+  expected=2427fdcbc149ca0a25ccfbb7c71b01f39ad42708773a47816cd2342861766b63
+  if [ -f "$RHINO_JAR" ] && [ "$(sha256_of "$RHINO_JAR")" = "$expected" ]; then
+    return 0
   fi
+  partial="$RHINO_JAR.partial"
+  curl --fail --location --silent --show-error --retry 6 --retry-all-errors \
+    "https://repo1.maven.org/maven2/org/mozilla/rhino/1.7.15/rhino-1.7.15.jar" --output "$partial" \
+    || { rm -f "$partial"; echo "download failed: rhino 1.7.15" >&2; return 1; }
+  if [ "$(sha256_of "$partial")" != "$expected" ]; then
+    rm -f "$partial"
+    echo "sha256 mismatch for rhino 1.7.15" >&2
+    return 1
+  fi
+  mv "$partial" "$RHINO_JAR"
 }
 
 compile() {
