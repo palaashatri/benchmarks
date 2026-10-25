@@ -76,10 +76,10 @@
     {
       "id": "09-onnx-inference",
       "path": "benchmarks/09-onnx-inference",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "seeded classifier as an ONNX graph run by ONNX Runtime 1.18.0 (Maven lane, checked against a Java reference); pure-Java fallback in smoke; functional Tier 1 prototype"
+      "status": "seeded classifier as an ONNX graph run by a live ONNX Runtime 1.18.0 session (Maven lane, checked against a Java reference); Tier 2 measurement engine with application-process telemetry, open-loop load and warm-up gating; no measurement-valid results yet"
     },
     {
       "id": "10-microservices-fleet",
@@ -100,10 +100,10 @@
     {
       "id": "12-hft-trading-gateway",
       "path": "benchmarks/12-hft-trading-gateway",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP, persistent framed TCP and a real grpc-java listener (verified by mvn test); functional Tier 1 prototype"
+      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP, persistent framed TCP and a grpc-java listener; Tier 2 measurement engine with application-process telemetry, open-loop load and warm-up gating; no measurement-valid results yet"
     },
     {
       "id": "13-large-monolith",

@@ -8,7 +8,8 @@ if [ -z "$JAVA_HOME_VALUE" ]; then
 fi
 OUT=${1:-"$ROOT/results/ledger-tier2"}
 mkdir -p "$(dirname -- "$OUT")"
-exec python3 "$ROOT/tools/run_ledger_experiment.py" \
+exec python3 "$ROOT/tools/run_tier2_experiment.py" \
+  --workload 01-fintech-ledger \
   --java-home "$JAVA_HOME_VALUE" \
   --gc "${GC:-g1}" \
   --target-rate "${TARGET_RATE:-80}" \

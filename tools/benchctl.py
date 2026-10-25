@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import benchctl_report
+import host_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / ".benchctl"
@@ -554,12 +555,10 @@ def environment_fingerprint() -> dict[str, Any]:
         "cgroup_version": 2 if cgroup_v2 else 1 if Path("/sys/fs/cgroup").exists() else None,
         "cgroup_cpu_max": _read_text("/sys/fs/cgroup/cpu.max"),
         "cgroup_memory_max": _read_text("/sys/fs/cgroup/memory.max"),
-        "cpu_governor": _read_text(
-            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
-        ),
         "transparent_hugepages": _read_text(
             "/sys/kernel/mm/transparent_hugepage/enabled"
         ),
+        **host_environment.observations(),
         "git_commit": git_commit,
         "git_dirty": git_dirty,
         "hostname_hash": hashlib.sha256(platform.node().encode()).hexdigest()[:12],
@@ -775,6 +774,17 @@ def cmd_list_workloads(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    report = host_environment.preflight(environment_fingerprint())
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        for check in report["checks"]:
+            print(f"{check['status'].upper():5} {check['check']:22} {check['detail']}")
+        print("quiet-machine preflight " + ("passed" if report["passed"] else "FAILED"))
+    return 0 if report["passed"] else 1
+
+
 def cmd_list_capabilities(_: argparse.Namespace) -> int:
     for runtime in load_runtimes():
         enabled = [
@@ -885,6 +895,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="benchctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
+    preflight = subparsers.add_parser("preflight", help="check the host is quiet enough for Tier 2 runs")
+    preflight.add_argument("--json", action="store_true")
+    preflight.set_defaults(func=cmd_preflight)
     subparsers.add_parser("discover-runtimes").set_defaults(func=cmd_discover)
     subparsers.add_parser("list-runtimes").set_defaults(func=cmd_list_runtimes)
 

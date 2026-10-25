@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Controlled OpenJDK ledger experiment runner.
+"""Controlled OpenJDK Tier 2 experiment runner.
+
+Every workload is measured through the same engine: its tier2.json contract declares how to build,
+check, launch and load it. The runner owns the measurement; the workload owns its behaviour.
 
 This is the first workload-specific Tier-2 candidate. It launches the measured
 JVM directly, drives it with the shared open-loop HdrHistogram generator,
@@ -22,6 +25,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,11 +34,20 @@ ROOT = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
 
 import benchctl
+import host_environment
 import telemetry
+from measurement_stats import (
+    bootstrap_ci,
+    describe_outliers,
+    median_absolute_deviation,
+    warmup_stability,
+)
 
-APP_DIR = ROOT / "benchmarks" / "01-fintech-ledger" / "app"
 LOADGEN = ROOT / "tools" / "loadgen" / "run.sh"
-MAIN_CLASS = "com.palaashatri.bench.b01.app.BenchmarkApp"
+DEFAULT_WORKLOAD = "01-fintech-ledger"
+# Latency settles more slowly and more noisily than throughput; this threshold is a
+# placeholder and is reported, not gated, until calibrated on the target hardware.
+LATENCY_PROVISIONAL_MAX_CV = 0.20
 CRITICAL_ENVIRONMENT_FIELDS = (
     "os",
     "os_release",
@@ -46,13 +59,67 @@ CRITICAL_ENVIRONMENT_FIELDS = (
     "cgroup_version",
     "cgroup_cpu_max",
     "cgroup_memory_max",
-    "cpu_governor",
+    "cpu_governors",
     "transparent_hugepages",
+    "transparent_hugepage_mode",
+    "smt_control",
+    "numa_nodes",
+    "online_cpus",
+    "swap_devices",
+    "injected_jvm_options",
 )
 
 
 class ExperimentError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class Workload:
+    """A Tier 2 workload as declared by its benchmarks/<id>/tier2.json contract."""
+
+    id: str
+    directory: Path
+    app_dir: Path
+    main_class: str
+    token_prefix: str
+    identity_path: str
+    load_mix: Path
+    correctness: list[str]
+    build: list[str]
+    classpath_file: str
+    classpath_prefix: list[str]
+    min_jdk: int
+    max_jdk: int
+    tier: str
+
+
+def load_workload(workload_id: str) -> Workload:
+    directory = ROOT / "benchmarks" / workload_id
+    descriptor_path = directory / "tier2.json"
+    if not descriptor_path.exists():
+        raise ExperimentError(f"{workload_id} has no tier2.json measurement contract")
+    spec = json.loads(descriptor_path.read_text())
+    catalog = json.loads((ROOT / "benchmarks" / "catalog.json").read_text())
+    entry = next((item for item in catalog["workloads"] if item["id"] == workload_id), None)
+    if entry is None:
+        raise ExperimentError(f"{workload_id} is not in benchmarks/catalog.json")
+    return Workload(
+        id=workload_id,
+        directory=directory,
+        app_dir=directory / spec["app_dir"],
+        main_class=spec["main_class"],
+        token_prefix=spec["token_prefix"],
+        identity_path=spec["identity_path"],
+        load_mix=directory / spec["load_mix"],
+        correctness=spec["correctness"],
+        build=spec["build"],
+        classpath_file=spec["classpath_file"],
+        classpath_prefix=spec.get("classpath_prefix", []),
+        min_jdk=int(entry["min_jdk"]),
+        max_jdk=int(entry["max_jdk"]),
+        tier=entry["tier"],
+    )
 
 
 def run(
@@ -85,14 +152,15 @@ def java_environment(java_home: Path) -> dict[str, str]:
     return environment
 
 
-def validate_runtime(java_home: Path, collector: str) -> dict[str, Any]:
+def validate_runtime(java_home: Path, collector: str, workload: Workload) -> dict[str, Any]:
     java = executable(java_home, "java")
     if not java.exists():
         raise ExperimentError(f"Java executable not found: {java}")
     runtime = benchctl.probe_runtime(java)
-    if runtime["feature_version"] < 21 or runtime["feature_version"] > 25:
+    if not workload.min_jdk <= runtime["feature_version"] <= workload.max_jdk:
         raise ExperimentError(
-            f"ledger Tier-2 candidate supports JDK 21-25, got JDK {runtime['feature_version']}"
+            f"{workload.id} supports JDK {workload.min_jdk}-{workload.max_jdk}, "
+            f"got JDK {runtime['feature_version']}"
         )
     if not benchctl._is_openjdk_hotspot(runtime):
         raise ExperimentError(f"not an OpenJDK HotSpot runtime: {runtime['vm_name']}")
@@ -113,29 +181,36 @@ def validate_runtime(java_home: Path, collector: str) -> dict[str, Any]:
     return runtime
 
 
-def correctness_gate(environment: dict[str, str], output: Path) -> None:
-    completed = run([APP_DIR / "run.sh", "test"], cwd=APP_DIR, env=environment, timeout=240)
+def correctness_gate(workload: Workload, environment: dict[str, str], output: Path) -> None:
+    completed = run(workload.correctness, cwd=workload.app_dir, env=environment, timeout=900)
     output.write_text(completed.stdout + "\n" + completed.stderr)
     if completed.returncode != 0:
         raise ExperimentError(
-            f"ledger correctness gate failed ({completed.returncode}): "
+            f"{workload.id} correctness gate failed ({completed.returncode}): "
             f"{(completed.stdout + completed.stderr)[-500:]}"
         )
 
 
-def build_dependencies(environment: dict[str, str], output: Path) -> str:
-    completed = run([APP_DIR / "run.sh", "build"], cwd=APP_DIR, env=environment, timeout=240)
+def build_classpath(workload: Workload, environment: dict[str, str], output: Path) -> str:
+    """Build the workload and return its runtime classpath, as the workload declares it."""
+    completed = run(workload.build, cwd=workload.app_dir, env=environment, timeout=900)
     output.write_text(completed.stdout + "\n" + completed.stderr)
     if completed.returncode != 0:
         raise ExperimentError(
-            f"ledger build failed ({completed.returncode}): "
+            f"{workload.id} build failed ({completed.returncode}): "
             f"{(completed.stdout + completed.stderr)[-500:]}"
         )
-    classes = APP_DIR / "build" / "run-sh" / "classes"
-    dependencies = sorted((APP_DIR / "build" / "run-sh" / "deps").glob("*.jar"))
-    if not classes.exists() or not dependencies:
-        raise ExperimentError("ledger build did not produce classes and dependency JARs")
-    return os.pathsep.join([str(classes), *(str(path) for path in dependencies)])
+    entries_file = workload.app_dir / workload.classpath_file
+    if not entries_file.exists():
+        raise ExperimentError(f"{workload.id} build did not write {workload.classpath_file}")
+    entries = [str(workload.app_dir / item) for item in entries_file.read_text().strip().split(os.pathsep) if item]
+    prefix = [str(workload.app_dir / item) for item in workload.classpath_prefix]
+    for entry in [*prefix, *entries]:
+        if not Path(entry).exists():
+            raise ExperimentError(f"{workload.id} classpath entry is missing: {entry}")
+    if not entries and not prefix:
+        raise ExperimentError(f"{workload.id} build produced an empty classpath")
+    return os.pathsep.join([*prefix, *entries])
 
 
 def build_loadgen(environment: dict[str, str], output: Path) -> None:
@@ -152,25 +227,31 @@ def free_port() -> int:
     return benchctl.free_port()
 
 
-def wait_identity(port: int, process: subprocess.Popen[str], token: str, timeout: int = 30) -> dict[str, Any]:
+def wait_identity(
+    port: int,
+    process: subprocess.Popen[str],
+    token: str,
+    identity_path: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise ExperimentError(f"application exited before readiness: {process.returncode}")
         try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}/runtime", timeout=.5
-            ) as response:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}{identity_path}", timeout=.5) as response:
                 identity = json.load(response)
-            if identity.get("run_token") == token and int(identity.get("pid", -1)) == process.pid:
-                return identity
-            raise ExperimentError(
-                f"application identity mismatch: expected pid={process.pid}, token={token!r}; got {identity}"
-            )
         except Exception as exception:
             last_error = exception
             time.sleep(.1)
+            continue
+        # Outside the try: a wrong process must fail now, not be retried until timeout.
+        if identity.get("run_token") == token and int(identity.get("pid", -1)) == process.pid:
+            return identity
+        raise ExperimentError(
+            f"application identity mismatch: expected pid={process.pid}, token={token!r}; got {identity}"
+        )
     raise ExperimentError(f"application identity timeout: {last_error}")
 
 
@@ -293,26 +374,6 @@ def checksum_tree(root: Path) -> list[dict[str, Any]]:
     return values
 
 
-def median_absolute_deviation(values: list[float]) -> float | None:
-    if not values:
-        return None
-    median = statistics.median(values)
-    return statistics.median(abs(value - median) for value in values)
-
-
-def bootstrap_ci(values: list[float], *, seed: int, samples: int = 10_000) -> dict[str, float | None]:
-    if not values:
-        return {"low": None, "high": None, "confidence": .95}
-    random_source = random.Random(seed)
-    means = []
-    for _ in range(samples):
-        means.append(statistics.fmean(random_source.choice(values) for _ in values))
-    means.sort()
-    low = means[max(0, int(samples * .025))]
-    high = means[min(samples - 1, int(samples * .975))]
-    return {"low": low, "high": high, "confidence": .95}
-
-
 def aggregate_metric(values: list[float], seed: int) -> dict[str, Any]:
     if not values:
         return {
@@ -348,6 +409,7 @@ def critical_environment(environment: dict[str, Any]) -> dict[str, Any]:
 
 def run_repetition(
     *,
+    workload: Workload,
     repetition: int,
     repetition_dir: Path,
     runtime: dict[str, Any],
@@ -371,7 +433,7 @@ def run_repetition(
     jfr_tool = executable(java_home, "jfr")
     environment = java_environment(java_home)
     token = hashlib.sha256(
-        f"ledger-{repetition}-{seed}-{time.time_ns()}".encode()
+        f"{workload.token_prefix}-{repetition}-{seed}-{time.time_ns()}".encode()
     ).hexdigest()
     environment["BENCH_RUN_TOKEN"] = token
     port = free_port()
@@ -399,7 +461,7 @@ def run_repetition(
 
     app_log = app_log_path.open("w")
     popen_arguments: dict[str, Any] = {
-        "cwd": APP_DIR,
+        "cwd": workload.app_dir,
         "env": environment,
         "stdout": app_log,
         "stderr": subprocess.STDOUT,
@@ -408,7 +470,7 @@ def run_repetition(
     if os.name == "posix":
         popen_arguments["start_new_session"] = True
     process = subprocess.Popen(
-        [java, *jvm_arguments, "-cp", classpath, MAIN_CLASS, str(port)],
+        [java, *jvm_arguments, "-cp", classpath, workload.main_class, str(port)],
         **popen_arguments,
     )
 
@@ -420,13 +482,15 @@ def run_repetition(
     status = "failed"
     failure: str | None = None
     load_result: dict[str, Any] | None = None
+    warmup_check: dict[str, Any] | None = None
+    latency_check: dict[str, Any] | None = None
     application_identity: dict[str, Any] | None = None
     process_summary: dict[str, Any] = {}
     jcmd_results: dict[str, Any] = {}
     jstat_results: dict[str, Any] = {}
     environment_fingerprint = benchctl.environment_fingerprint()
     try:
-        application_identity = wait_identity(port, process, token)
+        application_identity = wait_identity(port, process, token, workload.identity_path)
         sampler.start()
         load_output = repetition_dir / "loadgen.json"
         histogram_output = repetition_dir / "latency.hgrm"
@@ -446,6 +510,10 @@ def run_repetition(
                 str(threads),
                 "--seed",
                 str(seed + repetition),
+                "--mix",
+                str(workload.load_mix),
+                "--benchmark",
+                workload.id,
                 "--run-kind",
                 "benchmark",
                 "--out",
@@ -468,6 +536,11 @@ def run_repetition(
             raise ExperimentError("measurement phase contains request errors")
         if load_result["completed"]["measurement"] != load_result["scheduled"]["measurement"]:
             raise ExperimentError("measurement phase did not complete every scheduled request")
+        warmup_check = warmup_stability(load_result["series"]["completed"], warmup_seconds)
+        # Informational until thresholds are calibrated on the target hardware.
+        latency_check = warmup_stability(
+            load_result["series"]["p50_ms"], warmup_seconds, max_cv=LATENCY_PROVISIONAL_MAX_CV
+        )
 
         jcmd_results = telemetry.collect_jcmd(jcmd, process.pid, telemetry_dir)
         jstat_results = telemetry.collect_jstat(jstat, process.pid, telemetry_dir)
@@ -519,6 +592,8 @@ def run_repetition(
         "application_identity": application_identity,
         "environment": environment_fingerprint,
         "load": load_result,
+        "warmup_stability": warmup_check,
+        "latency_stability": latency_check,
         "telemetry": normalized_telemetry,
     }
     (repetition_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -528,11 +603,19 @@ def run_repetition(
     return result
 
 
-def validity(repetitions: list[dict[str, Any]], run_kind: str) -> tuple[bool, list[str], list[str]]:
+def validity(
+    repetitions: list[dict[str, Any]],
+    run_kind: str,
+    preflight: dict[str, Any] | None = None,
+) -> tuple[bool, list[str], list[str]]:
     reasons: list[str] = []
     warnings: list[str] = []
     if run_kind != "benchmark":
         reasons.append("run_kind is not benchmark")
+    if preflight is None:
+        reasons.append("host preflight was not recorded")
+    elif not preflight["passed"]:
+        reasons.extend(f"host failed preflight: {failure}" for failure in preflight["failures"])
     if len(repetitions) < 5:
         reasons.append("at least five repetitions are required")
     if any(repetition["status"] != "passed" for repetition in repetitions):
@@ -547,6 +630,8 @@ def validity(repetitions: list[dict[str, Any]], run_kind: str) -> tuple[bool, li
         if load.get("completed", {}).get("measurement") != load.get("scheduled", {}).get("measurement"):
             reasons.append("scheduled measurement requests were not all completed")
             break
+    if any(not (repetition.get("warmup_stability") or {}).get("stable_before_measurement") for repetition in repetitions):
+        reasons.append("throughput did not stabilise within warm-up in one or more repetitions")
     if any(repetition["actual_collector"] is None for repetition in repetitions):
         reasons.append("actual collector could not be established from JVM logs")
     if any(
@@ -645,6 +730,44 @@ def aggregate(repetitions: list[dict[str, Any]], seed: int) -> dict[str, Any]:
     }
 
 
+# Metrics screened for outliers. They are reported with their repetition numbers and are
+# never removed from the aggregate.
+OUTLIER_METRICS = (
+    ("throughput", ("load", "kpis", "throughput")),
+    ("p99_ms", ("load", "kpis", "p99_ms")),
+    ("gc_pause_p99_ms", ("telemetry", "gc", "p99_ms")),
+    ("rss_mb_max", ("telemetry", "process", "rss_bytes_max")),
+)
+
+
+def combine_preflight(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    """Pass only if the host was quiet both before and after the measurement."""
+    failures = [*before["failures"], *(f"after run: {failure}" for failure in after["failures"])]
+    return {
+        "passed": before["passed"] and after["passed"],
+        "before": before,
+        "after": after,
+        "checks": before["checks"],
+        "failures": failures,
+    }
+
+
+def outlier_report(repetitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    report = []
+    for name, path in OUTLIER_METRICS:
+        numbers: list[float] = []
+        labels: list[int] = []
+        for repetition in repetitions:
+            value: Any = repetition
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if isinstance(value, (int, float)):
+                numbers.append(float(value) / (1024 * 1024) if name == "rss_mb_max" else float(value))
+                labels.append(repetition["repetition"])
+        report.append(describe_outliers(name, numbers, labels))
+    return report
+
+
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--java-home", required=True, type=Path)
@@ -661,6 +784,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--seed", type=int, default=424242)
     value.add_argument("--heap-mb", type=int, default=512)
     value.add_argument("--run-kind", choices=["calibration", "benchmark"], default="benchmark")
+    value.add_argument("--workload", default=DEFAULT_WORKLOAD)
     value.add_argument("--out", type=Path, required=True)
     value.add_argument("--skip-correctness", action="store_true")
     value.add_argument("--jvm-arg", action="append", default=[])
@@ -670,7 +794,7 @@ def parser() -> argparse.ArgumentParser:
 def main(arguments: list[str] | None = None) -> int:
     args = parser().parse_args(arguments)
     if os.name != "posix" or not Path("/proc").exists():
-        raise ExperimentError("controlled ledger telemetry currently requires Linux /proc")
+        raise ExperimentError("controlled Tier 2 telemetry requires Linux /proc")
     if args.repetitions < 1:
         raise ExperimentError("repetitions must be positive")
     if args.run_kind == "benchmark" and args.repetitions < 5:
@@ -678,17 +802,21 @@ def main(arguments: list[str] | None = None) -> int:
     if args.target_rate <= 0 or args.warmup_seconds < 0 or args.measure_seconds < 1:
         raise ExperimentError("invalid load phase configuration")
 
+    workload = load_workload(args.workload)
     output = args.out.resolve()
     if output.exists() and any(output.iterdir()):
         raise ExperimentError(f"output directory is not empty: {output}")
     output.mkdir(parents=True, exist_ok=True)
 
-    runtime = validate_runtime(args.java_home.resolve(), args.gc)
+    runtime = validate_runtime(args.java_home.resolve(), args.gc, workload)
+    # The host is checked before and after the measurement: a machine that becomes busy
+    # mid-run is not quiet for the whole run.
+    preflight_before = host_environment.preflight(benchctl.environment_fingerprint())
     environment = java_environment(Path(runtime["java_home"]))
     (output / "runtime.json").write_text(json.dumps(runtime, indent=2) + "\n")
     (output / "experiment.json").write_text(json.dumps({
         "schema_version": "1.0.0",
-        "workload": "01-fintech-ledger",
+        "workload": workload.id,
         "run_kind": args.run_kind,
         "runtime": runtime["id"],
         "gc": args.gc,
@@ -703,13 +831,14 @@ def main(arguments: list[str] | None = None) -> int:
     }, indent=2) + "\n")
 
     if not args.skip_correctness:
-        correctness_gate(environment, output / "correctness.log")
-    classpath = build_dependencies(environment, output / "build-ledger.log")
+        correctness_gate(workload, environment, output / "correctness.log")
+    classpath = build_classpath(workload, environment, output / "build-workload.log")
     build_loadgen(environment, output / "build-loadgen.log")
 
     repetitions = []
     for repetition in range(1, args.repetitions + 1):
         result = run_repetition(
+            workload=workload,
             repetition=repetition,
             repetition_dir=output / "repetitions" / f"{repetition:02d}",
             runtime=runtime,
@@ -729,13 +858,16 @@ def main(arguments: list[str] | None = None) -> int:
             flush=True,
         )
 
-    measurement_valid, invalid_reasons, warnings = validity(repetitions, args.run_kind)
+    preflight_after = host_environment.preflight(benchctl.environment_fingerprint())
+    preflight = combine_preflight(preflight_before, preflight_after)
+    measurement_valid, invalid_reasons, warnings = validity(repetitions, args.run_kind, preflight)
     aggregate_result = aggregate(repetitions, args.seed)
     final = {
         "schema_version": "1.0.0",
-        "benchmark": "01-fintech-ledger",
+        "benchmark": workload.id,
         "run_kind": args.run_kind,
-        "implementation_tier": "tier-2" if measurement_valid else "tier-1",
+        # The implementation's tier comes from the catalog; validity is reported separately.
+        "implementation_tier": workload.tier,
         "measurement_valid": measurement_valid,
         "invalid_reasons": invalid_reasons,
         "warnings": warnings,
@@ -743,6 +875,8 @@ def main(arguments: list[str] | None = None) -> int:
         "java_identity_sha256": runtime["identity"],
         "requested_collector": args.gc,
         "repetitions": repetitions,
+        "preflight": preflight,
+        "outliers": outlier_report(repetitions),
         "aggregate": aggregate_result,
     }
     (output / "result.json").write_text(json.dumps(final, indent=2) + "\n")

@@ -1,0 +1,5 @@
+# Request mix for the fintech ledger (weight, method, path, body). Reproduces the original 50/30/20 split;
+# transfers never target the source account.
+50	POST	/transfers	{"from":"${from=int:1:2000}","to":"${distinct:1:2000:from}","amount_cents":${int:1:100}}
+30	GET	/accounts/${acct=int:1:2000}/balance
+20	GET	/accounts/${acct=int:1:2000}/transactions

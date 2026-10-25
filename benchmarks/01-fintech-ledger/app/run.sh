@@ -56,6 +56,7 @@ compile() {
   mkdir -p "$CLASSES_DIR"
   find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
   javac --release "$JAVA_RELEASE" -cp "$(classpath)" -d "$CLASSES_DIR" @"$SOURCES_FILE"
+  printf '%s' "$CLASSES_DIR:$(classpath)" > build/run-sh/classpath.txt
 }
 
 run() {

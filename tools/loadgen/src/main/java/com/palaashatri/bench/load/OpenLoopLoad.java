@@ -9,7 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -17,13 +21,25 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.concurrent.locks.LockSupport;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.HdrHistogram.Histogram;
 import org.HdrHistogram.Recorder;
 
-/** Open-loop HTTP load generator for the ledger contract. */
-public final class OpenLoopLedger {
-    private OpenLoopLedger() { }
+/**
+ * Open-loop HTTP load generator with coordinated-omission correction.
+ *
+ * <p>Requests are scheduled at a fixed rate and latency is measured from the intended send
+ * time, so a slow server cannot hide its own queueing. The request mix comes from a contract
+ * file (see {@link Mix}), so the generator carries no workload knowledge. Output is a load
+ * envelope only: it makes no validity claim, and the Tier 2 runner decides that.
+ */
+public final class OpenLoopLoad {
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\$\\{([^}]*)}");
+
+    private OpenLoopLoad() { }
 
     public static void main(String[] arguments) throws Exception {
         Map<String, String> options = options(arguments);
@@ -33,25 +49,22 @@ public final class OpenLoopLedger {
         int measureSeconds = Integer.parseInt(options.getOrDefault("measure-seconds", "5"));
         int threads = Integer.parseInt(options.getOrDefault("threads", "16"));
         long seed = Long.parseLong(options.getOrDefault("seed", "424242"));
-        String runKind = options.getOrDefault("run-kind", "smoke");
+        String benchmark = options.getOrDefault("benchmark", "unspecified");
         Path output = Path.of(options.getOrDefault("out", "build/results.json"));
-        Path histogramOutput = Path.of(
-                options.getOrDefault("histogram-out", "build/latency.hgrm"));
+        Path histogramOutput = Path.of(options.getOrDefault("histogram-out", "build/latency.hgrm"));
+        if (!options.containsKey("mix")) {
+            throw new IllegalArgumentException("--mix is required: the request mix is part of the workload contract");
+        }
+        Mix mix = Mix.load(Path.of(options.get("mix")));
 
         if (!(targetRate > 0) || warmupSeconds < 0 || measureSeconds < 1 || threads < 1) {
             throw new IllegalArgumentException("invalid rate, phase duration, or thread count");
         }
-        Result result = execute(
-                baseUrl,
-                targetRate,
-                warmupSeconds,
-                measureSeconds,
-                threads,
-                seed,
-                histogramOutput);
+        Result result = execute(baseUrl, targetRate, warmupSeconds, measureSeconds, threads, seed, mix, histogramOutput);
         Files.createDirectories(output.toAbsolutePath().getParent());
-        Files.writeString(output, result.toJson(runKind) + System.lineSeparator());
-        System.out.println(result.toJson(runKind));
+        String json = result.toJson(benchmark);
+        Files.writeString(output, json + System.lineSeparator());
+        System.out.println(json);
         if (result.measureErrors > 0 || result.measureCompleted != result.measureScheduled) {
             throw new IllegalStateException(
                     "load run failed: completed=" + result.measureCompleted
@@ -67,6 +80,7 @@ public final class OpenLoopLedger {
             int measureSeconds,
             int threads,
             long seed,
+            Mix mix,
             Path histogramOutput) throws Exception {
         long intervalNs = Math.max(1L, Math.round(1_000_000_000.0 / targetRate));
         long warmupCount = Math.round(targetRate * warmupSeconds);
@@ -75,6 +89,14 @@ public final class OpenLoopLedger {
         if (totalCount > Integer.MAX_VALUE) {
             throw new IllegalArgumentException("planned request count exceeds implementation limit");
         }
+
+        // One bucket per phase second. Responses that arrive after the last second are
+        // counted in the last bucket, so the series never ends on an artificial empty bucket.
+        int seconds = warmupSeconds + measureSeconds;
+        AtomicLongArray scheduledPerSecond = new AtomicLongArray(seconds);
+        AtomicLongArray completedPerSecond = new AtomicLongArray(seconds);
+        Histogram[] latencyPerSecond = new Histogram[seconds];
+        for (int second = 0; second < seconds; second++) latencyPerSecond[second] = new Histogram(3);
 
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         HttpClient client = HttpClient.newBuilder()
@@ -97,21 +119,30 @@ public final class OpenLoopLedger {
             long scheduled = epoch + index * intervalNs;
             waitUntil(scheduled);
             boolean measurement = index >= warmupCount;
-            RequestSpec spec = request(random);
-            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + spec.path))
+            int second = Math.min(seconds - 1, (int) ((scheduled - epoch) / 1_000_000_000L));
+            scheduledPerSecond.incrementAndGet(second);
+            Mix.Request spec = mix.next(random);
+            HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + spec.path()))
                     .timeout(Duration.ofSeconds(10));
-            if (spec.body == null) {
-                builder.GET();
+            if (spec.body() == null) {
+                builder.method(spec.method(), HttpRequest.BodyPublishers.noBody());
             } else {
                 builder.header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(
-                                spec.body, StandardCharsets.UTF_8));
+                        .method(spec.method(), HttpRequest.BodyPublishers.ofString(spec.body(), StandardCharsets.UTF_8));
             }
             client.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
                     .whenComplete((response, failure) -> {
                         long latency = Math.max(1L, System.nanoTime() - scheduled);
                         Recorder recorder = measurement ? measureRecorder : warmupRecorder;
                         recorder.recordValueWithExpectedInterval(latency, intervalNs);
+                        // Latency is attributed to the second the request was meant to be sent;
+                        // delivered throughput is attributed to the second the response arrived.
+                        synchronized (latencyPerSecond[second]) {
+                            latencyPerSecond[second].recordValueWithExpectedInterval(latency, intervalNs);
+                        }
+                        int doneSecond = Math.max(0, Math.min(seconds - 1,
+                                (int) ((System.nanoTime() - epoch) / 1_000_000_000L)));
+                        completedPerSecond.incrementAndGet(doneSecond);
                         boolean successful = failure == null
                                 && response.statusCode() >= 200
                                 && response.statusCode() < 300
@@ -144,6 +175,15 @@ public final class OpenLoopLedger {
         }
 
         double throughput = measureCompleted.get() / (double) measureSeconds;
+        List<Long> scheduledSeries = new ArrayList<>();
+        List<Long> completedSeries = new ArrayList<>();
+        List<Double> p50Series = new ArrayList<>();
+        for (int second = 0; second < seconds; second++) {
+            scheduledSeries.add(scheduledPerSecond.get(second));
+            completedSeries.add(completedPerSecond.get(second));
+            Histogram bucket = latencyPerSecond[second];
+            p50Series.add(bucket.getTotalCount() == 0 ? null : bucket.getValueAtPercentile(50) / 1_000_000.0);
+        }
         return new Result(
                 targetRate,
                 intervalNs,
@@ -159,25 +199,11 @@ public final class OpenLoopLedger {
                 warmup,
                 measurement,
                 measureStart,
-                histogramOutput.toString());
-    }
-
-    private static RequestSpec request(Random random) {
-        int choice = random.nextInt(100);
-        int account = 1 + random.nextInt(2_000);
-        if (choice < 50) {
-            int target = 1 + random.nextInt(1_999);
-            if (target >= account) target++;
-            long amount = 1 + random.nextInt(100);
-            return new RequestSpec(
-                    "/transfers",
-                    "{\"from\":\"" + account + "\",\"to\":\"" + target
-                            + "\",\"amount_cents\":" + amount + "}");
-        }
-        if (choice < 80) {
-            return new RequestSpec("/accounts/" + account + "/balance", null);
-        }
-        return new RequestSpec("/accounts/" + account + "/transactions", null);
+                histogramOutput.toString(),
+                scheduledSeries,
+                completedSeries,
+                p50Series,
+                mix.describe());
     }
 
     private static void waitUntil(long scheduled) {
@@ -207,7 +233,161 @@ public final class OpenLoopLedger {
         return values;
     }
 
-    record RequestSpec(String path, String body) { }
+    /**
+     * Weighted request templates from a tab-separated contract file. Each non-blank line is
+     * {@code weight<TAB>method<TAB>path<TAB>body}; the body column is optional. Placeholders:
+     * {@code ${int:MIN:MAX}}, {@code ${float:MIN:MAX}}, {@code ${pick:A|B|C}},
+     * {@code ${NAME=expr}} to capture a value for reuse in the same request, {@code ${NAME}} to
+     * reuse it, and {@code ${distinct:MIN:MAX:NAME}} for an int in range that differs from NAME.
+     */
+    static final class Mix {
+        private final List<Entry> entries;
+        private final long totalWeight;
+
+        private Mix(List<Entry> entries) {
+            this.entries = entries;
+            this.totalWeight = entries.stream().mapToLong(Entry::weight).sum();
+        }
+
+        static Mix load(Path file) throws Exception {
+            List<Entry> entries = new ArrayList<>();
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            for (int index = 0; index < lines.size(); index++) {
+                String line = lines.get(index);
+                if (line.isBlank() || line.startsWith("#")) continue;
+                String[] columns = line.split("\t", -1);
+                if (columns.length < 3) {
+                    throw new IllegalArgumentException(file + ":" + (index + 1) + ": expected weight, method, path[, body]");
+                }
+                int weight;
+                try {
+                    weight = Integer.parseInt(columns[0].trim());
+                } catch (NumberFormatException exception) {
+                    throw new IllegalArgumentException(file + ":" + (index + 1) + ": weight must be an integer");
+                }
+                if (weight <= 0) throw new IllegalArgumentException(file + ":" + (index + 1) + ": weight must be positive");
+                String method = columns[1].trim();
+                if (!method.equals("GET") && !method.equals("POST") && !method.equals("PUT") && !method.equals("DELETE")) {
+                    throw new IllegalArgumentException(file + ":" + (index + 1) + ": unsupported method " + method);
+                }
+                String body = columns.length > 3 && !columns[3].isEmpty() ? columns[3] : null;
+                Entry entry = new Entry(weight, method, columns[2], body);
+                try {
+                    entry.expand(new Random(0));
+                } catch (IllegalArgumentException exception) {
+                    throw new IllegalArgumentException(file + ":" + (index + 1) + ": " + exception.getMessage());
+                }
+                entries.add(entry);
+            }
+            if (entries.isEmpty()) throw new IllegalArgumentException(file + ": no request templates");
+            return new Mix(entries);
+        }
+
+        Request next(Random random) {
+            long choice = random.nextLong(totalWeight);
+            for (Entry entry : entries) {
+                choice -= entry.weight();
+                if (choice < 0) return entry.expand(random);
+            }
+            throw new IllegalStateException("unreachable: weights are positive");
+        }
+
+        String describe() {
+            StringBuilder out = new StringBuilder("[");
+            for (Entry entry : entries) {
+                if (out.length() > 1) out.append(',');
+                out.append("{\"weight\":").append(entry.weight())
+                        .append(",\"method\":\"").append(entry.method()).append("\"")
+                        .append(",\"path\":\"").append(escape(entry.path())).append("\"}");
+            }
+            return out.append(']').toString();
+        }
+
+        record Request(String method, String path, String body) { }
+
+        record Entry(int weight, String method, String path, String body) {
+            Request expand(Random random) {
+                Map<String, String> captured = new HashMap<>();
+                String expandedPath = expandTemplate(path, random, captured);
+                String expandedBody = body == null ? null : expandTemplate(body, random, captured);
+                return new Request(method, expandedPath, expandedBody);
+            }
+        }
+
+        static String expandTemplate(String template, Random random, Map<String, String> captured) {
+            Matcher matcher = PLACEHOLDER.matcher(template);
+            StringBuilder out = new StringBuilder();
+            while (matcher.find()) {
+                String replacement = placeholder(matcher.group(1), random, captured);
+                matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
+            }
+            matcher.appendTail(out);
+            return out.toString();
+        }
+
+        private static String placeholder(String token, Random random, Map<String, String> captured) {
+            // A capture is NAME=expression, where NAME is everything before the first '='
+            // and contains no ':'. A '=' that follows a ':' belongs to a pick choice.
+            int equals = token.indexOf('=');
+            int colon = token.indexOf(':');
+            boolean capture = equals > 0 && (colon < 0 || colon > equals);
+            if (capture) {
+                String name = token.substring(0, equals);
+                String value = expression(token.substring(equals + 1), random, captured);
+                captured.put(name, value);
+                return value;
+            }
+            if (captured.containsKey(token)) return captured.get(token);
+            return expression(token, random, captured);
+        }
+
+        private static String expression(String expression, Random random, Map<String, String> captured) {
+            String[] parts = expression.split(":");
+            switch (parts[0]) {
+                case "int": {
+                    long low = parseLong(parts, 1, 3, expression);
+                    long high = parseLong(parts, 2, 3, expression);
+                    if (high < low) throw new IllegalArgumentException("empty range in ${" + expression + "}");
+                    return Long.toString(low + random.nextLong(high - low + 1));
+                }
+                case "float": {
+                    double low = Double.parseDouble(parts[1]);
+                    double high = Double.parseDouble(parts[2]);
+                    return String.format(Locale.ROOT, "%.6f", low + random.nextDouble() * (high - low));
+                }
+                case "pick": {
+                    String[] choices = expression.substring("pick:".length()).split("\\|");
+                    return choices[random.nextInt(choices.length)];
+                }
+                case "distinct": {
+                    long low = parseLong(parts, 1, 4, expression);
+                    long high = parseLong(parts, 2, 4, expression);
+                    String other = parts[3];
+                    if (!captured.containsKey(other)) {
+                        throw new IllegalArgumentException("${" + expression + "} refers to uncaptured " + other);
+                    }
+                    long excluded = Long.parseLong(captured.get(other));
+                    long value = low + random.nextLong(high - low);
+                    if (value >= excluded) value++;
+                    if (value > high) throw new IllegalArgumentException("range too small in ${" + expression + "}");
+                    return Long.toString(value);
+                }
+                default:
+                    throw new IllegalArgumentException("unknown placeholder ${" + expression + "}");
+            }
+        }
+
+        private static long parseLong(String[] parts, int index, int expected, String expression) {
+            if (parts.length != expected) {
+                throw new IllegalArgumentException("malformed placeholder ${" + expression + "}");
+            }
+            try {
+                return Long.parseLong(parts[index]);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("not an integer in ${" + expression + "}");
+            }
+        }
+    }
 
     static final class Result {
         final double targetRate;
@@ -225,6 +405,10 @@ public final class OpenLoopLedger {
         final Histogram measurement;
         final long measurementStartNano;
         final String histogramPath;
+        final List<Long> scheduledSeries;
+        final List<Long> completedSeries;
+        final List<Double> p50Series;
+        final String mixDescription;
 
         Result(
                 double targetRate,
@@ -241,7 +425,11 @@ public final class OpenLoopLedger {
                 Histogram warmup,
                 Histogram measurement,
                 long measurementStartNano,
-                String histogramPath) {
+                String histogramPath,
+                List<Long> scheduledSeries,
+                List<Long> completedSeries,
+                List<Double> p50Series,
+                String mixDescription) {
             this.targetRate = targetRate;
             this.expectedIntervalNs = expectedIntervalNs;
             this.warmupSeconds = warmupSeconds;
@@ -257,17 +445,16 @@ public final class OpenLoopLedger {
             this.measurement = measurement;
             this.measurementStartNano = measurementStartNano;
             this.histogramPath = histogramPath;
+            this.scheduledSeries = scheduledSeries;
+            this.completedSeries = completedSeries;
+            this.p50Series = p50Series;
+            this.mixDescription = mixDescription;
         }
 
-        String toJson(String runKind) {
+        String toJson(String benchmark) {
             return "{"
                     + "\"schema_version\":\"1.0.0\","
-                    + "\"benchmark\":\"01-fintech-ledger\","
-                    + "\"run_kind\":\"" + escape(runKind) + "\","
-                    + "\"implementation_tier\":\"tier-1\","
-                    + "\"measurement_valid\":false,"
-                    + "\"invalid_reasons\":[\"application-process telemetry and repetition aggregation are required before promotion\"],"
-                    + "\"warnings\":[],"
+                    + "\"benchmark\":\"" + escape(benchmark) + "\","
                     + "\"load_model\":\"open-loop\","
                     + "\"coordinated_omission_corrected\":true,"
                     + "\"target_rate\":" + format(targetRate) + ','
@@ -288,9 +475,17 @@ public final class OpenLoopLedger {
                     + "\"p999_ms\":" + millis(measurement.getValueAtPercentile(99.9)) + ','
                     + "\"p9999_ms\":" + millis(measurement.getValueAtPercentile(99.99)) + ','
                     + "\"max_ms\":" + millis(measurement.getMaxValue()) + ','
-                    + "\"mean_ms\":" + format(measurement.getMean() / 1_000_000.0) + ','
-                    + "\"gc_pause_p99_ms\":null,\"alloc_rate_mb_s\":null,"
-                    + "\"rss_mb\":null,\"native_mem_mb\":null,\"cpu_util_pct\":null},"
+                    + "\"mean_ms\":" + format(measurement.getMean() / 1_000_000.0) + "},"
+                    + "\"series\":{"
+                    + "\"bucket_seconds\":1,"
+                    + "\"scheduled\":" + longList(scheduledSeries) + ','
+                    + "\"scheduled_bucketed_by\":\"intended_send_time\","
+                    + "\"completed\":" + longList(completedSeries) + ','
+                    + "\"completed_bucketed_by\":\"response_time\","
+                    + "\"p50_ms\":" + doubleList(p50Series) + ','
+                    + "\"p50_bucketed_by\":\"intended_send_time\""
+                    + "},"
+                    + "\"mix\":" + mixDescription + ','
                     + "\"histogram_path\":\"" + escape(histogramPath) + "\""
                     + "}";
         }
@@ -298,10 +493,28 @@ public final class OpenLoopLedger {
         private static String millis(long nanos) {
             return format(nanos / 1_000_000.0);
         }
+
+        private static String longList(List<Long> values) {
+            StringBuilder out = new StringBuilder("[");
+            for (Long value : values) {
+                if (out.length() > 1) out.append(',');
+                out.append(value);
+            }
+            return out.append(']').toString();
+        }
+
+        private static String doubleList(List<Double> values) {
+            StringBuilder out = new StringBuilder("[");
+            for (Double value : values) {
+                if (out.length() > 1) out.append(',');
+                out.append(value == null ? "null" : format(value));
+            }
+            return out.append(']').toString();
+        }
     }
 
     private static String format(double value) {
-        return String.format(java.util.Locale.ROOT, "%.6f", value);
+        return String.format(Locale.ROOT, "%.6f", value);
     }
 
     private static String escape(String value) {

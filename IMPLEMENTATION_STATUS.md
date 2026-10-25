@@ -6,7 +6,7 @@ Last audited: 2026-09-30; workload table updated by PR #5; repository re-checked
 
 **Overall classification: measurement-ready for benchmark 01; smoke/prototype-ready for all other workloads.**
 
-- Tier 2 workloads: **1** (`01-fintech-ledger`)
+- Tier 2 workloads: **3** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`); all three use the same measurement engine. Only `01` has been calibration-tested on this host; none has a measurement-valid result.
 - Measurement-valid published result sets: **0** (each run still has to pass validity gates)
 - JDK 8–25 controller support: runtime discovery, collector probing, implementation-band filtering and planning implemented
 - Compatibility lane: Java 8-bytecode smoke workload implemented; one hashed JAR is reused across all selected JDK/GC runs
@@ -27,10 +27,10 @@ The old committed results were removed because they mixed smoke traffic with har
 | 06 | Massive chat | 1 | Persistent virtual-thread TCP subscriptions and room fan-out; bounded outbound queues, real socket delivery counters and disconnect cleanup. |
 | 07 | Cold start | 1 | Isolated child-process time-to-health with runtime-token verification; no complete CDS/AppCDS matrix. |
 | 08 | ETL batch | 1 | Real local NIO pipeline; lacks reference digests and Tier 2 telemetry. |
-| 09 | ONNX inference | 1 | Seeded classifier built as an ONNX graph and run by a real ONNX Runtime 1.18.0 session in the Maven lane (`mvn test` checks it against the Java reference); the dependency-free smoke build reports the Java fallback. |
+| 09 | ONNX inference | 2 | Seeded classifier built as an ONNX graph and run by a real ONNX Runtime 1.18.0 session in the Maven lane (`mvn test` checks it against the Java reference); the dependency-free smoke build reports the Java fallback. |
 | 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
 | 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
-| 12 | HFT gateway | 1 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a real grpc-java listener; gRPC is verified by the Maven gate (`mvn test`), not by measurement runs. |
+| 12 | HFT gateway | 2 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a real grpc-java listener; gRPC is verified by the Maven gate (`mvn test`), not by measurement runs. |
 | 13 | Large monolith | 0 | Creates 500 distinct generated proxy classes and labels JIT compilation time correctly; still not an enterprise monolith. |
 
 ## Foundation delivered

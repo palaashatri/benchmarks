@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute Tier 2 benchmark plans through the ledger experiment runner."""
+"""Execute Tier 2 benchmark plans through the Tier 2 experiment runner."""
 from __future__ import annotations
 
 import json
@@ -25,14 +25,13 @@ def run_benchmark_plan(plan: dict, experiment_path: Path) -> Path:
 
     outputs = []
     for index, item in enumerate(plan["items"], 1):
-        if item["workload"] != "01-fintech-ledger" or item.get("tier") != "tier-2":
-            raise core.BenchError(
-                "benchmark execution is only enabled for the Tier 2 01-fintech-ledger workload"
-            )
+        if item.get("tier") != "tier-2":
+            raise core.BenchError(f"benchmark execution requires a Tier 2 workload: {item['workload']}")
         item_dir = run_dir / f"{index:03d}-{item['workload']}-{item['runtime']}-{item['gc']}"
         completed = core.command([
             sys.executable,
-            str(core.ROOT / "tools" / "run_ledger_experiment.py"),
+            str(core.ROOT / "tools" / "run_tier2_experiment.py"),
+            "--workload", item["workload"],
             "--java-home", item["java_home"],
             "--gc", item["gc"],
             "--target-rate", str(experiment.get("target_rate", 80)),
@@ -55,7 +54,7 @@ def run_benchmark_plan(plan: dict, experiment_path: Path) -> Path:
         result_path = item_dir / "result.json"
         if not result_path.exists():
             raise core.BenchError(
-                f"ledger experiment produced no result.json ({completed.returncode}): "
+                f"Tier 2 experiment produced no result.json ({completed.returncode}): "
                 f"{completed.combined[-500:]}"
             )
         outputs.append(json.loads(result_path.read_text()))

@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile controller modules
-        run: python3 -m py_compile tools/benchctl.py tools/benchctl_entry.py tools/check_repository.py tools/run_ledger_experiment.py tools/telemetry.py
+        run: python3 -m py_compile tools/benchctl.py tools/benchctl_entry.py tools/check_repository.py tools/run_tier2_experiment.py tools/measurement_stats.py tools/host_environment.py tools/telemetry.py
       - name: Unit tests
         run: python3 -m unittest discover -s tools/tests -v
       - name: Repository hygiene

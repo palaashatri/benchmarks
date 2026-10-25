@@ -1,14 +1,24 @@
 {
-  "schema_version":"1.0.0",
-  "id":"09-onnx-inference",
-  "tier":"tier-1",
-  "lane":"feature",
-  "min_jdk":17,
-  "max_jdk":25,
-  "implementation":"seeded 4-64-3 classifier as an ONNX graph executed by ONNX Runtime 1.18.0 in the Maven ONNX lane, checked against a pure-Java reference; pure-Java fallback in the dependency-free smoke build",
-  "onnx_session_active_in":{"smoke":false,"maven_onnx_lane":true},
-  "measurement_valid":false,
-  "invalid_reasons":["functional smoke only","phased open-loop measurement and application telemetry are not integrated","ONNX session correctness is verified by mvn test, not by measurement runs"],
-  "correctness_command":"cd app && ./run.sh test && mvn -B -f app/pom.xml test",
-  "operations":["POST /api/v1/inference/classify","GET /api/v1/inference/health"]
+  "schema_version": "1.0.0",
+  "id": "09-onnx-inference",
+  "tier": "tier-2",
+  "lane": "feature",
+  "min_jdk": 17,
+  "max_jdk": 25,
+  "implementation": "seeded 4-64-3 classifier as an ONNX graph executed by ONNX Runtime 1.18.0 in the Maven ONNX lane, checked against a pure-Java reference; pure-Java fallback in the dependency-free smoke build",
+  "onnx_session_active_in": {
+    "smoke": false,
+    "maven_onnx_lane": true
+  },
+  "measurement_valid": false,
+  "invalid_reasons": [
+    "no measurement-valid result yet: run on a quiet host to pass every gate",
+    "smoke results are never benchmark output",
+    "ONNX session correctness is verified by mvn test, not by measurement runs"
+  ],
+  "correctness_command": "cd app && ./run.sh test && mvn -B -f app/pom.xml test",
+  "operations": [
+    "POST /api/v1/inference/classify",
+    "GET /api/v1/inference/health"
+  ]
 }

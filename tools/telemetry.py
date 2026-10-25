@@ -238,12 +238,26 @@ def parse_nmt(text: str) -> dict[str, Any]:
     return result
 
 
+JVM_BANNER_PREFIXES = ("Picked up ",)
+
+
+def jvm_output_lines(text: str) -> list[list[str]]:
+    """Tokenised non-empty lines, without JVM launcher banners such as "Picked up ..."."""
+    return [
+        line.split()
+        for line in text.splitlines()
+        if line.strip() and not line.startswith(JVM_BANNER_PREFIXES)
+    ]
+
+
 def parse_jstat_compiler(text: str) -> dict[str, Any]:
-    lines = [line.split() for line in text.splitlines() if line.strip()]
-    if len(lines) < 2:
+    # Locate the header by its column names rather than by position: JAVA_TOOL_OPTIONS
+    # adds a banner line, and a positional read would silently pair the wrong lines.
+    lines = jvm_output_lines(text)
+    header_index = next((i for i, line in enumerate(lines) if "Compiled" in line), None)
+    if header_index is None or header_index + 1 >= len(lines):
         return {"compiled": None, "failed": None, "invalid": None, "time_seconds": None}
-    header, values = lines[-2], lines[-1]
-    mapping = dict(zip(header, values))
+    mapping = dict(zip(lines[header_index], lines[header_index + 1]))
     return {
         "compiled": parse_int(mapping.get("Compiled")),
         "failed": parse_int(mapping.get("Failed")),

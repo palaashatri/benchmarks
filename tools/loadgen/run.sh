@@ -7,7 +7,7 @@ CLASSES="$ROOT/build/classes"
 DEPS="$ROOT/build/deps"
 SOURCES="$ROOT/build/sources.txt"
 HDR="$DEPS/HdrHistogram-2.2.2.jar"
-MAIN="com.palaashatri.bench.load.OpenLoopLedger"
+MAIN="com.palaashatri.bench.load.OpenLoopLoad"
 
 sha256_of() {
   python3 -I -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
@@ -89,12 +89,19 @@ PY
   sleep 0.2
   java -cp "$CLASSES:$HDR" "$MAIN" \
     --base-url "http://127.0.0.1:$port" \
+    --mix "$ROOT/fixtures/self-test-mix.tsv" \
+    --benchmark self-test \
     --target-rate 20 \
     --warmup-seconds 1 \
     --measure-seconds 2 \
     --threads 4 \
     --out "$ROOT/build/self-test/results.json" \
     --histogram-out "$ROOT/build/self-test/latency.hgrm"
+  if java -cp "$CLASSES:$HDR" "$MAIN" --mix "$ROOT/fixtures/malformed-mix.tsv" \
+      --out "$ROOT/build/self-test/malformed.json" >/dev/null 2>&1; then
+    echo "malformed request contract was accepted" >&2
+    exit 1
+  fi
   python3 - "$ROOT/build/self-test/results.json" "$ROOT/build/self-test/latency.hgrm" <<'PY'
 import json
 import pathlib
@@ -106,6 +113,15 @@ assert result['scheduled']['measurement'] == 40
 assert result['completed']['measurement'] == 40
 assert result['errors']['measurement'] == 0
 assert result['kpis']['p99_ms'] >= 0
+assert result['series']['bucket_seconds'] == 1
+assert result['series']['completed_bucketed_by'] == 'response_time'
+assert result['series']['scheduled_bucketed_by'] == 'intended_send_time'
+assert len(result['series']['scheduled']) == 3, result['series']
+assert sum(result['series']['scheduled']) == 60, result['series']
+assert sum(result['series']['completed']) == 60, result['series']
+assert all(value is None or value > 0 for value in result['series']['p50_ms'])
+assert result['benchmark'] == 'self-test'
+assert 'implementation_tier' not in result and 'measurement_valid' not in result
 assert pathlib.Path(sys.argv[2]).stat().st_size > 0
 print('open-loop HdrHistogram self-test passed')
 PY
