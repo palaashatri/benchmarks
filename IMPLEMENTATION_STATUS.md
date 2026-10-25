@@ -1,6 +1,6 @@
 # Implementation status
 
-Last audited: 2026-09-30; workload table updated by PR #5; repository re-checked 2026-10-20.
+Last audited: 2026-09-30; workload table updated by PR #5; repository re-checked 2026-10-25 (gRPC for 12 and the ONNX session for 09 added; see the workload table).
 
 ## Readiness
 
@@ -27,7 +27,7 @@ The old committed results were removed because they mixed smoke traffic with har
 | 06 | Massive chat | 1 | Persistent virtual-thread TCP subscriptions and room fan-out; bounded outbound queues, real socket delivery counters and disconnect cleanup. |
 | 07 | Cold start | 1 | Isolated child-process time-to-health with runtime-token verification; no complete CDS/AppCDS matrix. |
 | 08 | ETL batch | 1 | Real local NIO pipeline; lacks reference digests and Tier 2 telemetry. |
-| 09 | ONNX inference | 0 | Truthful deterministic Java fallback; never reports ONNX active without a real session. |
+| 09 | ONNX inference | 1 | Seeded classifier built as an ONNX graph and run by a real ONNX Runtime 1.18.0 session in the Maven lane (`mvn test` checks it against the Java reference); the dependency-free smoke build reports the Java fallback. |
 | 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
 | 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
 | 12 | HFT gateway | 1 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a real grpc-java listener; gRPC is verified by the Maven gate (`mvn test`), not by measurement runs. |
@@ -55,22 +55,22 @@ The old committed results were removed because they mixed smoke traffic with har
 
 1. Produce measurement-valid ledger result sets on controlled hardware (current CI is not a quiet machine).
 2. Port the shared measurement engine from benchmark 01 to other workloads only after their claimed architecture exists.
-3. Implement real ONNX sessions for 09; add workload-specific correctness and shared measurement integration before Tier 2 promotion. (Real gRPC for 12 is done.)
+3. Add shared measurement integration to 09 and 12 before Tier 2 promotion. Real gRPC (12) and real ONNX Runtime sessions (09) are in place.
 4. Keep publication claims out of documentation until a Tier 3 controlled-environment run exists.
 
-## Known issues (2026-10-20)
+## Known issues
 
-- `tools/loadgen/run.sh` and `tools/run_tier2_ledger.sh` are tracked without the executable bit (`check_repository.py` warns; CI calls them via `bash`). `benchctl` itself was fixed in PR #5.
-- Workloads use three build paths: Gradle Kotlin DSL (01–08), Maven (09–13) and `run.sh` scripts that compile with raw `javac` and fetch jars with `curl`. None has a wrapper, and the `curl` downloads are version-pinned but not hash-checked.
-- `benchctl report` writes the result JSON inside an HTML `<pre>` block; there is no human-readable comparison yet.
+- Workloads use three build paths: Gradle Kotlin DSL (01–08), Maven (09–13) and `run.sh` scripts that compile with raw `javac`. None has a wrapper; adding one is open work.
+- The `run.sh` downloads (01, 05, `tools/loadgen`) are SHA-256 pinned. Gradle (01–08) and Maven (09–13) resolve through their own tooling and have no checksum verification metadata yet.
+- Maven Central through the development proxy intermittently returns 404 or 429 for artifacts that exist. Retries (`curl --retry`, Gradle `--refresh-dependencies`, `mvn -U`) absorb most of it; a full clean build can still need a second attempt.
 
 ## Product roadmap
 
 What would make the suite useful to someone deciding between JDKs or collectors, in priority order:
 
 1. **First published, measurement-valid result set** for `01-fintech-ledger` on a quiet machine (pinned CPU frequency, no other load), with the environment fingerprint, raw data and `benchctl compare` output checked in under a dated `published/` directory.
-2. **A readable report:** `benchctl report` producing tables and charts — throughput and p50/p99/p99.9 latency per JDK × GC with confidence intervals, plus GC pause and RSS summaries — instead of a JSON dump.
+2. **Charts in the readable report:** `benchctl report` now renders tables (aggregate statistics with confidence intervals, repetitions, environment, and a comparison of measurement-valid results). Charts for throughput and latency per JDK × GC, and GC pause and RSS summaries, remain.
 3. **One-command matrix runs:** `benchctl` fetching the JDK builds a plan needs (for example via the Foojay Disco API), so a user doesn't install eight JDKs by hand.
 4. **A second Tier 2 workload.** `02-microservices-mesh` now runs real separate JVMs and is the closest candidate; port the benchmark 01 measurement engine to it.
 5. **One build system with a wrapper** for every workload, and SHA-256 checks for every downloaded artifact.
-6. **Real ONNX Runtime sessions for 09-onnx-inference**, then promote it. Real gRPC for 12-hft-trading-gateway is in place (Maven lane).
+6. **Measurement integration for 09 and 12**: a phased open-loop run with application-process telemetry, then promote them to Tier 2 (both now have real protocol paths verified in the Maven lane).

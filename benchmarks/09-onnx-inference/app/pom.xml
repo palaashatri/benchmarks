@@ -6,9 +6,33 @@
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- ONNX Runtime Java API; the Maven ONNX lane compiles src/onnx/java against it. -->
+    <onnxruntime.version>1.18.0</onnxruntime.version>
   </properties>
+  <dependencies>
+    <dependency>
+      <groupId>com.microsoft.onnxruntime</groupId>
+      <artifactId>onnxruntime</artifactId>
+      <version>${onnxruntime.version}</version>
+    </dependency>
+  </dependencies>
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution><id>onnx-lane-sources</id><phase>generate-sources</phase>
+            <goals><goal>add-source</goal></goals>
+            <configuration><sources><source>${project.basedir}/src/onnx/java</source></sources></configuration>
+          </execution>
+          <execution><id>onnx-lane-resources</id><phase>generate-resources</phase>
+            <goals><goal>add-resource</goal></goals>
+            <configuration><resources><resource><directory>${project.basedir}/src/onnx/resources</directory></resource></resources></configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -19,6 +43,19 @@
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
         <configuration><mainClass>com.palaashatri.bench.b09.app.BenchmarkApp</mainClass></configuration>
+        <executions>
+          <execution><id>smoke-correctness</id><phase>test</phase><goals><goal>exec</goal></goals>
+            <configuration><executable>sh</executable><workingDirectory>${project.basedir}</workingDirectory>
+              <arguments><argument>./run.sh</argument><argument>test</argument></arguments>
+            </configuration>
+          </execution>
+          <execution><id>onnx-equivalence-check</id><phase>test</phase><goals><goal>java</goal></goals>
+            <configuration>
+              <mainClass>com.palaashatri.bench.b09.app.OnnxEquivalenceCheck</mainClass>
+              <classpathScope>test</classpathScope>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

@@ -76,10 +76,10 @@
     {
       "id": "09-onnx-inference",
       "path": "benchmarks/09-onnx-inference",
-      "tier": "tier-0",
+      "tier": "tier-1",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "truthful Java fallback only; ONNX session not implemented"
+      "status": "seeded classifier as an ONNX graph run by ONNX Runtime 1.18.0 (Maven lane, checked against a Java reference); pure-Java fallback in smoke; functional Tier 1 prototype"
     },
     {
       "id": "10-microservices-fleet",

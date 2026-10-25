@@ -7,42 +7,42 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.util.Random;
+import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Deterministic Java inference fallback.
+ * Classifier HTTP service.
  *
- * This class deliberately does not claim ONNX execution. Merely finding ONNX
- * Runtime classes on the classpath is not equivalent to loading and executing
- * an ONNX model. A real ONNX implementation must create an OrtSession, validate
- * a bundled model and expose numerical-equivalence tests before this workload
- * can be promoted beyond Tier 0.
+ * <p>The engine is an ONNX Runtime session when the Maven ONNX lane supplies a provider
+ * and the session loads; otherwise the Java reference engine runs. A missing provider is
+ * reported as {@code java-fallback}, never as ONNX. Every response names the engine that
+ * computed it, and {@code onnx_session_active} is true only for a live session.
  */
-public final class MiniHttpServer {
+public final class MiniHttpServer implements AutoCloseable {
     private static final String BENCHMARK = "09-onnx-inference";
     private static final String[] LABELS = {"setosa", "versicolor", "virginica"};
+    private static final String ONNX_MODE = "onnx-runtime";
 
-    private final JavaFallbackInference inference = new JavaFallbackInference();
-    private final boolean onnxClassesDetected;
+    private final InferenceEngine engine;
     private final AtomicLong requests = new AtomicLong();
     private final AtomicLong inferenceRequests = new AtomicLong();
     private final AtomicLong inferenceNanos = new AtomicLong();
+    private HttpServer server;
 
-    public MiniHttpServer() {
-        boolean detected;
-        try {
-            Class.forName("ai.onnxruntime.OrtEnvironment");
-            detected = true;
-        } catch (ClassNotFoundException ignored) {
-            detected = false;
-        }
-        onnxClassesDetected = detected;
+    public MiniHttpServer() throws Exception {
+        this.engine = selectEngine();
+    }
+
+    static InferenceEngine selectEngine() throws Exception {
+        ClassifierWeights weights = ClassifierWeights.seeded();
+        Optional<InferenceEngineProvider> provider = ServiceLoader.load(InferenceEngineProvider.class).findFirst();
+        return provider.isPresent() ? provider.get().create(weights) : new JavaFallbackEngine(weights);
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
         server.createContext("/health", this::health);
         server.createContext("/runtime", this::runtime);
         server.createContext("/metrics", this::metrics);
@@ -50,31 +50,52 @@ public final class MiniHttpServer {
         server.createContext("/api/v1/inference/classify", this::classify);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"mode\":\"java-fallback\",\"port\":%d,\"pid\":%d}%n",
-                BENCHMARK, port, ProcessHandle.current().pid());
+        System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"mode\":\"%s\",\"port\":%d,\"pid\":%d}%n",
+                BENCHMARK, engine.mode(), port(), ProcessHandle.current().pid());
+    }
+
+    /** The bound HTTP port, valid after {@link #start(int)}. */
+    public int port() {
+        return server.getAddress().getPort();
+    }
+
+    /** The engine that computes classifications; its mode is what responses report. */
+    public String mode() {
+        return engine.mode();
+    }
+
+    @Override
+    public synchronized void close() {
+        if (server != null) server.stop(0);
+        engine.close();
+    }
+
+    private boolean onnxSessionActive() {
+        return ONNX_MODE.equals(engine.mode());
     }
 
     private void health(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
-        json(exchange, 200, "{\"status\":\"UP\",\"mode\":\"java-fallback\","
-                + "\"onnx_classes_detected\":" + onnxClassesDetected
-                + ",\"onnx_session_active\":false}");
+        json(exchange, 200, "{\"status\":\"UP\",\"mode\":\"" + engine.mode() + "\""
+                + ",\"onnx_session_active\":" + onnxSessionActive() + "}");
     }
 
     private void runtime(HttpExchange exchange) throws IOException {
         json(exchange, 200, "{\"pid\":" + ProcessHandle.current().pid()
                 + ",\"run_token\":\"" + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", "")) + "\""
                 + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
-                + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\"}");
+                + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\""
+                + ",\"mode\":\"" + engine.mode() + "\"}");
     }
 
     private void metrics(HttpExchange exchange) throws IOException {
+        String mode = engine.mode();
         String body = "# TYPE inference_requests_total counter\n"
-                + "inference_requests_total{mode=\"java-fallback\"} " + inferenceRequests.get() + "\n"
+                + "inference_requests_total{mode=\"" + mode + "\"} " + inferenceRequests.get() + "\n"
                 + "# TYPE inference_duration_seconds_sum counter\n"
-                + "inference_duration_seconds_sum{mode=\"java-fallback\"} "
+                + "inference_duration_seconds_sum{mode=\"" + mode + "\"} "
                 + format(inferenceNanos.get() / 1_000_000_000.0) + "\n"
-                + "# TYPE onnx_session_active gauge\nonnx_session_active 0\n"
+                + "# TYPE onnx_session_active gauge\nonnx_session_active " + (onnxSessionActive() ? 1 : 0) + "\n"
                 + "# TYPE benchmark_requests_total counter\nbenchmark_requests_total{benchmark=\""
                 + BENCHMARK + "\"} " + requests.get() + "\n";
         bytes(exchange, 200, "text/plain; version=0.0.4", body);
@@ -92,7 +113,7 @@ public final class MiniHttpServer {
             features = tokenize(stringField(body, "text", "default input"));
         }
         long started = System.nanoTime();
-        float[] probabilities = inference.infer(features);
+        float[] probabilities = engine.infer(features);
         long duration = System.nanoTime() - started;
         inferenceRequests.incrementAndGet();
         inferenceNanos.addAndGet(duration);
@@ -101,36 +122,8 @@ public final class MiniHttpServer {
                 + ",\"label\":\"" + LABELS[classification] + "\""
                 + ",\"confidence\":" + format(probabilities[classification])
                 + ",\"inference_ms\":" + format(duration / 1_000_000.0)
-                + ",\"mode\":\"java-fallback\",\"onnx_session_active\":false}");
-    }
-
-    static final class JavaFallbackInference {
-        private final float[][] first = new float[64][4];
-        private final float[][] second = new float[3][64];
-
-        JavaFallbackInference() {
-            Random random = new Random(42);
-            for (float[] row : first) for (int i = 0; i < row.length; i++) row[i] = (float) (random.nextGaussian() * .3);
-            for (float[] row : second) for (int i = 0; i < row.length; i++) row[i] = (float) (random.nextGaussian() * .3);
-        }
-
-        float[] infer(float[] input) {
-            float[] hidden = new float[64];
-            for (int row = 0; row < hidden.length; row++) {
-                float value = 0;
-                for (int column = 0; column < 4; column++) value += first[row][column] * input[column];
-                hidden[row] = Math.max(0, value);
-            }
-            float[] output = new float[3];
-            for (int row = 0; row < output.length; row++) {
-                for (int column = 0; column < hidden.length; column++) output[row] += second[row][column] * hidden[column];
-            }
-            float max = Math.max(output[0], Math.max(output[1], output[2]));
-            float sum = 0;
-            for (int i = 0; i < output.length; i++) { output[i] = (float) Math.exp(output[i] - max); sum += output[i]; }
-            for (int i = 0; i < output.length; i++) output[i] /= sum;
-            return output;
-        }
+                + ",\"mode\":\"" + engine.mode() + "\""
+                + ",\"onnx_session_active\":" + onnxSessionActive() + "}");
     }
 
     private static float[] parseFeatures(String body) {

@@ -1,14 +1,14 @@
 {
   "schema_version":"1.0.0",
   "id":"09-onnx-inference",
-  "tier":"tier-0",
+  "tier":"tier-1",
   "lane":"feature",
   "min_jdk":17,
   "max_jdk":25,
-  "implementation":"deterministic pure-Java neural-network fallback",
-  "onnx_session_active":false,
+  "implementation":"seeded 4-64-3 classifier as an ONNX graph executed by ONNX Runtime 1.18.0 in the Maven ONNX lane, checked against a pure-Java reference; pure-Java fallback in the dependency-free smoke build",
+  "onnx_session_active_in":{"smoke":false,"maven_onnx_lane":true},
   "measurement_valid":false,
-  "invalid_reasons":["no bundled validated ONNX model session","fallback results must not be labeled ONNX"],
-  "correctness_command":"cd app && ./run.sh test",
+  "invalid_reasons":["functional smoke only","phased open-loop measurement and application telemetry are not integrated","ONNX session correctness is verified by mvn test, not by measurement runs"],
+  "correctness_command":"cd app && ./run.sh test && mvn -B -f app/pom.xml test",
   "operations":["POST /api/v1/inference/classify","GET /api/v1/inference/health"]
 }
