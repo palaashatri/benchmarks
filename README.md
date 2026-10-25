@@ -4,11 +4,9 @@ This repository is an OpenJDK HotSpot workload and regression suite. It contains
 
 ## Current readiness
 
-Benchmark `01-fintech-ledger` is the reference **Tier 2** workload. `benchctl run experiments/ledger-benchmark.yaml` launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical validity gates. A passing process exit is not sufficient: `measurement_valid` remains `false` unless those gates pass.
+Three workloads are **Tier 2** (measurement-ready in code): `01-fintech-ledger`, `09-onnx-inference` and `12-hft-trading-gateway`. Each runs through the same engine, which launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes, and no measurement-valid results exist yet. Benchmark execution waits for controlled hardware.
 
-All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points verify contracts and correctness, not publication-grade performance.
-
-Workloads 02, 06, 10, 11 and 12 now exercise independent JVMs or persistent TCP sessions. Their shared functional harness records actual application identity and leaves performance KPIs unavailable.
+All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points and Maven lifecycle verify contracts and correctness, not publication-grade performance.
 
 See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload state.
 
@@ -34,12 +32,22 @@ See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload
 
 The experiment files use JSON syntax because JSON is valid YAML and lets the controller remain dependency-free.
 
-Measurement of the reference ledger workload:
+Measurement, once a controlled host is available:
 
 ```bash
-./benchctl validate experiments/ledger-benchmark.yaml
-./benchctl plan experiments/ledger-benchmark.yaml
-./benchctl run experiments/ledger-benchmark.yaml
+./benchctl preflight                         # the host must pass every check
+./benchctl fetch-jdks --feature 21           # verified OpenJDK HotSpot build into .benchctl/jdks
+./benchctl validate experiments/tier2-workloads.yaml
+./benchctl plan experiments/tier2-workloads.yaml
+./benchctl run experiments/tier2-workloads.yaml
+./benchctl report results/<run-id>           # readable HTML report with charts
+```
+
+Each application and harness builds with its own Maven wrapper, pinned to Maven 3.9.11 and verified by SHA-256:
+
+```bash
+(cd benchmarks/01-fintech-ledger/app && ./mvnw -B test)
+(cd benchmarks/01-fintech-ledger/harness && ./mvnw -B test)
 ```
 
 The compatibility workload can also be tested directly:
@@ -75,6 +83,7 @@ python3 tools/check_repository.py
 ./benchctl validate experiments/quick.yaml
 ./benchctl validate experiments/standard.yaml
 ./benchctl validate experiments/ledger-benchmark.yaml
+./benchctl validate experiments/tier2-workloads.yaml
 ./benchctl discover-runtimes
 bash tools/loadgen/run.sh test
 bash tools/workload_tests/run_common.sh

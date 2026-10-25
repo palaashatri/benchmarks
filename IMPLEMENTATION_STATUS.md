@@ -1,16 +1,17 @@
 # Implementation status
 
-Last audited: 2026-09-30; workload table updated by PR #5; repository re-checked 2026-10-25 (gRPC for 12 and the ONNX session for 09 added; see the workload table).
+Last audited: 2026-09-30. Code-completion pass re-checked 2026-10-25: the Tier 2 measurement engine is generic, the build is unified, and the controller covers JDK fetching, host preflight and report charts.
 
 ## Readiness
 
-**Overall classification: measurement-ready for benchmark 01; smoke/prototype-ready for all other workloads.**
+**Overall classification: the code for the Tier 2 measurement path is complete for workloads 01, 09 and 12. No measurement-valid results exist yet. Benchmark execution waits for controlled hardware.**
 
-- Tier 2 workloads: **3** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`); all three use the same measurement engine. Only `01` has been calibration-tested on this host; none has a measurement-valid result.
-- Measurement-valid published result sets: **0** (each run still has to pass validity gates)
-- JDK 8–25 controller support: runtime discovery, collector probing, implementation-band filtering and planning implemented
-- Compatibility lane: Java 8-bytecode smoke workload implemented; one hashed JAR is reused across all selected JDK/GC runs
-- Publication-ready hardware comparisons: **none**
+- Tier 2 workloads: **3** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`). All three run through the same engine, `tools/run_tier2_experiment.py` with `tools/loadgen`, and each declares its contract in `benchmarks/<id>/tier2.json`.
+- Calibration on this host (not a benchmark): all three complete two repetitions with zero request errors, identity verified and warm-up stable. Every envelope is `measurement_valid: false`, because the host fails preflight (the CPU governor is not observable here, and this sandbox injects `JAVA_TOOL_OPTIONS`) and because the calibration run kind is not a benchmark.
+- Measurement-valid published result sets: **0**.
+- JDK 8–25 controller support: runtime discovery, collector probing, implementation-band filtering, planning and verified JDK fetching (`benchctl fetch-jdks`).
+- Build: one system for every workload. Applications and harnesses use Maven, each with a `./mvnw` wrapper pinned to Maven 3.9.11 and verified by SHA-256. Workload 00 keeps its `run.sh` lane.
+- Publication-ready hardware comparisons: **none**.
 
 The old committed results were removed because they mixed smoke traffic with hardcoded runtime metadata and load-generator JVM telemetry. They must not be used for JVM conclusions.
 
@@ -19,19 +20,27 @@ The old committed results were removed because they mixed smoke traffic with har
 | # | Workload | Tier | Audited state |
 |---|---|---:|---|
 | 00 | Runtime compatibility | 1 | Deterministic Java 8-bytecode sort/compress/hash workload; `benchctl` builds one JAR and records/reuses its SHA-256 digest across runtimes. |
-| 01 | Fintech ledger | 2 | Real H2/Hikari transactions, isolated process identity, balance-conservation checks, application-process JFR/GC/NMT/CPU/RSS telemetry, open-loop HdrHistogram load and statistical gates. |
-| 02 | Microservices mesh | 1 | Gateway plus three independent service JVMs; actual account/transaction/notification HTTP calls and child identity/readiness/cleanup checks. |
+| 01 | Fintech ledger | 2 | Real H2/Hikari transactions, isolated process identity, balance-conservation checks, application-process JFR/GC/NMT/CPU/RSS telemetry, open-loop HdrHistogram load, warm-up and statistical gates. Reference Tier 2 workload. |
+| 02 | Microservices mesh | 1 | Gateway plus three independent service JVMs; actual account/transaction/notification HTTP calls and child identity/readiness/cleanup checks. Not yet on the Tier 2 engine: its telemetry spans several JVMs. |
 | 03 | Streaming analytics | 1 | In-memory queue/window processor; no real broker/state backend. |
 | 04 | Vector/FFM inference | 1 | JDK 21 preview Vector API and FFM paths with scalar/SIMD equivalence smoke checks. |
 | 05 | Dynamic/polyglot service | 1 | Rhino execution prototype; not a cross-runtime OpenJDK feature lane. |
 | 06 | Massive chat | 1 | Persistent virtual-thread TCP subscriptions and room fan-out; bounded outbound queues, real socket delivery counters and disconnect cleanup. |
 | 07 | Cold start | 1 | Isolated child-process time-to-health with runtime-token verification; no complete CDS/AppCDS matrix. |
 | 08 | ETL batch | 1 | Real local NIO pipeline; lacks reference digests and Tier 2 telemetry. |
-| 09 | ONNX inference | 2 | Seeded classifier built as an ONNX graph and run by a real ONNX Runtime 1.18.0 session in the Maven lane (`mvn test` checks it against the Java reference); the dependency-free smoke build reports the Java fallback. |
+| 09 | ONNX inference | 2 | Seeded classifier built as an ONNX graph and run by a live ONNX Runtime 1.18.0 session (Maven lane). `mvn test` checks it against the Java reference, with max deviation 2.4e-7 over 1,000 inputs. The Tier 2 engine measures the live session (`mode: onnx-runtime`). The dependency-free smoke build reports the Java fallback. |
 | 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
 | 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
-| 12 | HFT gateway | 2 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a real grpc-java listener; gRPC is verified by the Maven gate (`mvn test`), not by measurement runs. |
+| 12 | HFT gateway | 2 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a grpc-java listener. `mvn test` makes eight real gRPC calls and reads the same orders back over HTTP. The Tier 2 engine measures the HTTP order path. |
 | 13 | Large monolith | 0 | Creates 500 distinct generated proxy classes and labels JIT compilation time correctly; still not an enterprise monolith. |
+
+## Measurement engine (Tier 2)
+
+- **Contract:** `benchmarks/<id>/tier2.json` declares the build, correctness gate, launch class, identity endpoint, token prefix, classpath and request mix. The JDK band and tier come from `catalog.json`.
+- **Load:** `tools/loadgen` (`OpenLoopLoad`) is an open-loop, coordinated-omission-corrected generator. The request mix is a TSV contract file with weighted templates. Its output is a load envelope with no validity claim.
+- **Gates:** correctness gate; identity (pid and run token) checked before load; zero request errors; every scheduled request completed; throughput stable inside warm-up (5 s window, CV ≤ 5 %); host preflight before and after; actual collector equals requested; repetition spread; at least five repetitions for a benchmark.
+- **Outliers:** modified z-score and Tukey fences, reported with repetition numbers and never removed.
+- **Provisional:** the latency stability threshold (20 % per-second p50 CV) is recorded but not gated, until it is calibrated on the target hardware.
 
 ## Foundation delivered
 
@@ -39,39 +48,39 @@ The old committed results were removed because they mixed smoke traffic with har
 - Single authoritative `AGENTS.md`.
 - Public-scope hygiene gate rejects proprietary/runtime-out-of-scope terminology.
 - Dependency-free `benchctl` controller.
-- OpenJDK runtime and collector capability discovery.
+- OpenJDK runtime and collector capability discovery; `benchctl fetch-jdks` (verified SHA-256, OpenJDK HotSpot allow-list, safe extraction).
+- `benchctl preflight`: quiet-machine checks, also applied to every Tier 2 run.
 - Workload JDK compatibility bands and invalid-combination skipping.
-- Experiment validation, matrix planning, smoke orchestration and Tier 2 ledger execution.
+- Experiment validation, matrix planning, smoke orchestration and Tier 2 execution for every Tier 2 workload.
 - Truthful smoke result envelopes and invalid-comparison refusal.
 - Versioned experiment, runtime and result schemas.
 - Workload catalog with audited tiers.
-- Controller unit tests and JDK 8/11/17/21/25 discovery CI.
+- Controller unit tests (71), including the Tier 2 contract, preflight, JDK fetch and report tests; JDK 8/11/17/21/25 discovery CI.
+- Readable report (`benchctl report`): tables, charts for throughput and latency over time, per-repetition bars, and a comparison of measurement-valid results.
 - Compatibility smoke CI on JDK 8 and JDK 25.
-- Correctness smoke checks for every numbered workload.
-- Shared open-loop HdrHistogram load generator.
+- Correctness smoke checks for every numbered workload; Maven lifecycle CI for every application and harness.
 - Statistical comparison using median throughput and bootstrap confidence-interval overlap.
 
-## Remaining work after this completion pass
+## Remaining work
 
-1. Produce measurement-valid ledger result sets on controlled hardware (current CI is not a quiet machine).
-2. Port the shared measurement engine from benchmark 01 to other workloads only after their claimed architecture exists.
-3. Add shared measurement integration to 09 and 12 before Tier 2 promotion. Real gRPC (12) and real ONNX Runtime sessions (09) are in place.
-4. Keep publication claims out of documentation until a Tier 3 controlled-environment run exists.
+Everything below needs controlled hardware or a live environment. No code work is left in this pass.
+
+1. **Run the benchmark matrix on a controlled host.** Run `benchctl preflight` until it passes, then `./benchctl run experiments/tier2-workloads.yaml`. Expect the first runs to be invalid until the host passes every gate. Check the results with `benchctl report`.
+2. **Calibrate the provisional thresholds on that host.** These are the latency stability threshold and the warm-up window length, both set without hardware data.
+3. **Live verification of JDK fetching.** `benchctl fetch-jdks` follows the Foojay v3 Disco API shape. This sandbox cannot reach `api.foojay.io` (proxy policy denies it), so the live endpoint has only been exercised through local fixtures.
+4. **Tier 2 for the remaining workloads** (for example 02, whose telemetry spans several JVMs). Not planned in this pass.
+5. **Tier 3 publication** of controlled-environment results, once they pass every gate. Until then, no publication claims.
 
 ## Known issues
 
-- Workloads use three build paths: Gradle Kotlin DSL (01–08), Maven (09–13) and `run.sh` scripts that compile with raw `javac`. None has a wrapper; adding one is open work.
-- The `run.sh` downloads (01, 05, `tools/loadgen`) are SHA-256 pinned. Gradle (01–08) and Maven (09–13) resolve through their own tooling and have no checksum verification metadata yet.
-- `gradle test` for 01–08 has no test sources, so it passes without checking anything. Their correctness checks run through `run.sh test`; a Gradle-native test lane is open work.
-- Maven Central through the development proxy intermittently returns 404 or 429 for artifacts that exist. Retries (`curl --retry`, Gradle `--refresh-dependencies`, `mvn -U`) absorb most of it; a full clean build can still need a second attempt.
+- Workload 00 has no Maven build; its `run.sh test` lane runs in CI.
+- Maven Central through the development proxy intermittently returns 404 or 429 for artifacts that exist. The wrapper and `run.sh` downloads retry, and a full clean build can still need a second attempt.
+- Gradle is gone from the repository. The previous `gradle test` for 02 and 06 ran their `run.sh test` gates through a task hook; that behaviour is kept under Maven.
+- The Maven distribution pinned in each `mvnw` is verified by its SHA-256; Central's SHA-512 was used to confirm the digest.
 
 ## Product roadmap
 
-What would make the suite useful to someone deciding between JDKs or collectors, in priority order:
-
-1. **First published, measurement-valid result set** for `01-fintech-ledger` on a quiet machine (pinned CPU frequency, no other load), with the environment fingerprint, raw data and `benchctl compare` output checked in under a dated `published/` directory.
-2. **Charts in the readable report:** `benchctl report` now renders tables (aggregate statistics with confidence intervals, repetitions, environment, and a comparison of measurement-valid results). Charts for throughput and latency per JDK × GC, and GC pause and RSS summaries, remain.
-3. **One-command matrix runs:** `benchctl` fetching the JDK builds a plan needs (for example via the Foojay Disco API), so a user doesn't install eight JDKs by hand.
-4. **A second Tier 2 workload.** `02-microservices-mesh` now runs real separate JVMs and is the closest candidate; port the benchmark 01 measurement engine to it.
-5. **One build system with a wrapper** for every workload, and SHA-256 checks for every downloaded artifact.
-6. **Measurement integration for 09 and 12**: a phased open-loop run with application-process telemetry, then promote them to Tier 2 (both now have real protocol paths verified in the Maven lane).
+1. **First published, measurement-valid result set** for `01-fintech-ledger` on a quiet machine (pinned CPU frequency, no other load), with the environment fingerprint, raw data, the preflight record and `benchctl compare` output, under a dated `published/` directory.
+2. **Measurement results for 09 and 12** on the same host, once their calibration thresholds are set.
+3. **Charts per JDK × GC** once the matrix has data: the report already draws the charts; the matrix view needs the data.
+4. **Tier 2 for the remaining workloads**, starting with 02, once their telemetry is defined per process.
