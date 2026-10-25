@@ -108,10 +108,10 @@
     {
       "id": "13-large-monolith",
       "path": "benchmarks/13-large-monolith",
-      "tier": "tier-0",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "500 generated proxy classes; still not an enterprise monolith"
+      "status": "1,000 generated components wired by a reflective constructor-injection container and traversed per request, checked against a Python model of the graph; Tier 2 measurement engine with application-process telemetry; synthetic container, not a production framework; no measurement-valid results yet"
     }
   ]
 }

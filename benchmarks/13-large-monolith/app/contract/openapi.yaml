@@ -1,33 +1,30 @@
 openapi: 3.0.3
 info:
   title: Large Monolith contract
-  version: 0.2.0
+  version: 0.3.0
+  description: Routes served by the generated component graph. Every route is GET.
 paths:
   /health:
     get:
       responses:
-        '200': {description: healthy}
+        '200': {description: process is up; reports declared and wired component counts}
+  /runtime:
+    get:
+      responses:
+        '200': {description: pid, run token and Java version of the serving process, used for identity checks}
   /metrics:
     get:
       responses:
-        '200': {description: prometheus metrics}
-  /actuator/health:
+        '200': {description: Prometheus text exposition}
+  /api/v1/monolith/graph:
     get:
       responses:
-        '200': {description: actuator health}
-  /actuator/prometheus:
+        '200': {description: declared graph shape, wired count, the Java reference result and the expected result}
+  /api/v1/monolith/work:
     get:
       responses:
-        '200': {description: actuator prometheus metrics}
-  /api/customers/{id}:
+        '200': {description: one traversal of every component; result equals expected_result from the graph route}
+  /api/v1/monolith/warmup/status:
     get:
       responses:
-        '200': {description: Read customer graph}
-  /api/orders:
-    post:
-      responses:
-        '200': {description: Create monolith order}
-  /api/reports/daily:
-    get:
-      responses:
-        '200': {description: Run daily report}
+        '200': {description: startup, class-loading and JIT figures; jit_compilation_ms is null when the JVM does not report it}

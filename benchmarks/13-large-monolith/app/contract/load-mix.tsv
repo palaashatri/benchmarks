@@ -1,0 +1,3 @@
+# Traversals dominate; graph reads keep the metadata path exercised. Columns: weight, method, path.
+95	GET	/api/v1/monolith/work
+5	GET	/api/v1/monolith/graph

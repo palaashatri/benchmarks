@@ -1,77 +1,75 @@
 # Implementation Notes — Benchmark 13: Large Monolith
 
-## What Was Implemented
+## What it is
 
-### App (MiniHttpServer.java)
+A synthetic monolith: **1,000 generated components** (20 modules of 50) wired by a reflective
+constructor-injection container at startup, then traversed once per request. It exercises the
+costs a large application pays at runtime: class loading of many classes, reflective object
+graph construction, constructor-parameter annotations, and deep call chains through application
+classes.
 
-ByteBuddy was not used because the app's `run.sh` compiles with raw `javac --release 17`
-and runs with `java -cp build/run-sh/classes`, so ByteBuddy is never on the classpath.
+It is **not** a production framework. There is no Spring, no persistence, no transactions and no
+restart distribution. The benchmark claim is limited to the container and traversal costs above.
 
-Instead, **500 `SimpleBean` POJOs are generated in a loop at startup** to simulate
-the classloading and object-graph creation that a large Spring context would trigger:
+## How it is built
 
-```java
-for (int i = 1; i <= 500; i++) {
-    SimpleBean b = new SimpleBean(i, "SimpleBean-" + i);
-    beans.add(b);
-    // hash each bean name to simulate JIT compilation pressure
-    beanNameHashes.put(i, deterministicHash(...));
-}
-```
+- `app/tools/generate_graph.py` (stdlib Python) writes the component sources and a `Manifest`.
+  Each component is `Node_mXX_rYY` with `@Bean("mXX-rYY")`. A component depends on:
+  - its primary: the previous row of its module (`rYY-1`), absent on row 0;
+  - its secondary: the same row of the previous module (`mXX-1`), absent in module 0.
+  Dependencies only point backwards, so the graph is acyclic.
+- `run.sh build` runs the generator, compiles the hand-written sources with the generated ones
+  (`javac --release 17`) and writes `build/run-sh/classpath.txt`.
+- Maven runs the same generator in `generate-sources` and adds its output as a source root.
 
-This is a faithful functional substitute for the ByteBuddy-generated bean fallback.
+## Runtime
 
-### JVM Metrics Exposed
+- `Container` instantiates every bean once, dependencies first, from the public constructor.
+  Constructor parameters are annotated `@Dep("...")`. Duplicate beans, missing dependencies and
+  cycles fail startup.
+- Each component's `seed()` is derived from its tag and its dependencies' seeds, so the wiring
+  determines the seeds.
+- `apply(value)` passes the value down the primary chain. One traversal visits every component
+  once: each module tail is applied in turn.
+- `/api/v1/monolith/work` returns the traversal result and `components_visited`. Components visited
+  is structural (the chain length), not sampled per call.
 
-- **JIT compilation time**: `ManagementFactory.getCompilationMXBean().getTotalCompilationTime()`
-  exposed at `/metrics` as `monolith_jit_compilation_ms` and in `/api/v1/monolith/warmup/status`.
-- **Class loading count**: `ManagementFactory.getClassLoadingMXBean().getLoadedClassCount()`
-  exposed at `/metrics` as `monolith_loaded_classes`.
-- **Throughput sampler**: background daemon thread samples TPS every second, tracks peak TPS
-  and time-to-90%-of-peak.
+## Correctness
 
-### Routes
+`./run.sh test` checks:
+- every component is wired (`wired_components == components`);
+- the Java reference result (computed at startup from the wired graph) equals `expected_result`,
+  which the generator computes in Python from its own model of the wiring. A container that wires
+  the graph differently fails here. This was checked by mutating the generator's seed derivation
+  in a scratch copy: the test failed with the two results differing;
+- ten traversals each return `expected_result` and visit every component;
+- `/metrics` exposes the component gauge.
 
-- `GET /health` — basic health check (no request counter)
-- `GET /metrics` — Prometheus-format metrics (no request counter)
-- `GET /api/v1/monolith/health` — monolith health with startup_ms
-- `GET /api/v1/monolith/warmup/status` — full warmup KPI payload
+`mvn test` runs the same script (`exec` in the `test` phase). The harness smoke runs through
+`tools/workload_tests/run_harness.sh` with the shared functional client.
 
-### Harness (BenchmarkHarness.java)
+## Routes
 
-- Concurrent execution via `ExecutorService` + `CountDownLatch` with configurable `--threads` (default 8)
-- Wall-clock throughput measured across all concurrent requests
-- GC time collected via `ManagementFactory.getGarbageCollectorMXBeans()`
-- RSS collected via `ps -o rss= -p <pid>` / 1024
-- CPU via `com.sun.management.OperatingSystemMXBean.getCpuLoad()`
-- Final fetch of `/api/v1/monolith/warmup/status` populates `mode_kpis`
+- `GET /health`, `GET /runtime` (identity: pid, run token, Java version), `GET /metrics`
+- `GET /api/v1/monolith/graph` — shape, reference result, expected result
+- `GET /api/v1/monolith/work` — one traversal
+- `GET /api/v1/monolith/warmup/status` — startup, loaded classes and JIT time; `jit_compilation_ms`
+  is `null` when the JVM does not report compilation time
 
-## Smoke Test Result
+## Measurement path
 
-**PASS** — `REQUESTS=20 ./run.sh test` in `harness/` directory.
+Tier 2 through the shared engine (`tier2.json`, `app/contract/load-mix.tsv`): the engine builds the
+app with `./run.sh build`, checks identity on `/runtime`, runs the correctness gate and drives the
+load mix with open-loop HdrHistogram load. The mix is 95% traversals and 5% graph reads.
 
-Output summary:
-- 20/20 requests succeeded
-- `results.json` written and non-empty
-- `mode_kpis.time_to_first_response_ms` = 316 ms
-- `mode_kpis.compiled_methods` = 88 ms (JIT total compilation time proxy)
-- Throughput ~320 req/s wall-clock
+No measurement-valid result exists. Validity needs the controlled-hardware run described in
+`IMPLEMENTATION_STATUS.md`.
 
-## Deviations from Specification
+## Limits
 
-| Specification | Actual |
-|---|---|
-| ByteBuddy dynamic bean generation | 500 `SimpleBean` POJOs in a loop (no ByteBuddy — not on classpath) |
-| Full Spring context with 500+ beans | Simulated via POJO loop + name-hash JIT pressure |
-| `compiled_methods` field in mode_kpis | Uses `jit_compilation_ms` as proxy (same MXBean value) |
-
-## Files Modified / Created
-
-- `app/src/main/java/com/palaashatri/bench/b13/app/MiniHttpServer.java` — full replacement
-- `app/run.sh` — SMOKE_GETS/SMOKE_POSTS updated to match new routes
-- `harness/src/main/java/com/palaashatri/bench/b13/harness/BenchmarkHarness.java` — full replacement
-- `harness/run.sh` — SMOKE_GETS/SMOKE_POSTS updated; `--threads` arg added to harness invocation
-- `harness/docker-compose.yml` — added Grafana provisioning volumes
-- `harness/grafana/provisioning/datasources/prometheus.yaml` — created
-- `harness/grafana/provisioning/dashboards/dashboards.yaml` — created
-- `harness/grafana/dashboards/dashboard.json` — replaced with 4-panel dashboard
+- The graph is generated, so its shape is fixed at build time (`--modules`, `--depth`). Changing
+  it means regenerating, not reconfiguring at runtime.
+- Each request traverses the whole graph, so per-request cost scales with component count by
+  design. Throughput numbers only mean something relative to the same graph size.
+- The container is a small reflective stand-in, not a framework; it does not model scopes, proxies,
+  lifecycle callbacks or configuration binding.

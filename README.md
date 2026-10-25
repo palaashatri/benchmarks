@@ -4,7 +4,7 @@ This repository is an OpenJDK HotSpot workload and regression suite. It contains
 
 ## Current readiness
 
-Three workloads are **Tier 2** (measurement-ready in code): `01-fintech-ledger`, `09-onnx-inference` and `12-hft-trading-gateway`. Each runs through the same engine, which launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes, and no measurement-valid results exist yet. Benchmark execution waits for controlled hardware.
+Four workloads are **Tier 2** (measurement-ready in code): `01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway` and `13-large-monolith`. Each runs through the same engine, which launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes, and no measurement-valid results exist yet. Benchmark execution waits for controlled hardware.
 
 All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points and Maven lifecycle verify contracts and correctness, not publication-grade performance.
 

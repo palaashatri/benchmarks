@@ -4,10 +4,10 @@ Last audited: 2026-09-30. Code-completion pass re-checked 2026-10-25: the Tier 2
 
 ## Readiness
 
-**Overall classification: the code for the Tier 2 measurement path is complete for workloads 01, 09 and 12. No measurement-valid results exist yet. Benchmark execution waits for controlled hardware.**
+**Overall classification: the code for the Tier 2 measurement path is complete for workloads 01, 09, 12 and 13. Workloads 02–08, 10 and 11 are Tier 1 prototypes and are not yet at their documented design. No measurement-valid results exist yet. Benchmark execution waits for controlled hardware.**
 
-- Tier 2 workloads: **3** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`). All three run through the same engine, `tools/run_tier2_experiment.py` with `tools/loadgen`, and each declares its contract in `benchmarks/<id>/tier2.json`.
-- Calibration on this host (not a benchmark): all three complete two repetitions with zero request errors, identity verified and warm-up stable. Every envelope is `measurement_valid: false`, because the host fails preflight (the CPU governor is not observable here, and this sandbox injects `JAVA_TOOL_OPTIONS`) and because the calibration run kind is not a benchmark.
+- Tier 2 workloads: **4** (`01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway`, `13-large-monolith`). All four run through the same engine, `tools/run_tier2_experiment.py` with `tools/loadgen`, and each declares its contract in `benchmarks/<id>/tier2.json`.
+- Calibration on this host (not a benchmark): 01, 09 and 12 complete two repetitions with zero request errors, identity verified and warm-up stable. 13 completed a five-second calibration repetition at 50 req/s with zero errors. Every envelope is `measurement_valid: false`, because the host fails preflight (the CPU governor is not observable here, and this sandbox injects `JAVA_TOOL_OPTIONS`) and because the calibration run kind is not a benchmark.
 - Measurement-valid published result sets: **0**.
 - JDK 8–25 controller support: runtime discovery, collector probing, implementation-band filtering, planning and verified JDK fetching (`benchctl fetch-jdks`).
 - Build: one system for every workload. Applications and harnesses use Maven, each with a `./mvnw` wrapper pinned to Maven 3.9.11 and verified by SHA-256. Workload 00 keeps its `run.sh` lane.
@@ -32,7 +32,7 @@ The old committed results were removed because they mixed smoke traffic with har
 | 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
 | 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
 | 12 | HFT gateway | 2 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a grpc-java listener. `mvn test` makes eight real gRPC calls and reads the same orders back over HTTP. The Tier 2 engine measures the HTTP order path. |
-| 13 | Large monolith | 0 | Creates 500 distinct generated proxy classes and labels JIT compilation time correctly; still not an enterprise monolith. |
+| 13 | Large monolith | 2 | Generates 1,000 components (20 modules of 50) at build time. A reflective constructor-injection container wires them dependencies-first and every request traverses the whole graph. The result is checked against an independent Python model of the wiring. A synthetic container, not a production framework. Tier 2 engine. |
 
 ## Measurement engine (Tier 2)
 

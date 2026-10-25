@@ -4,9 +4,9 @@ An OpenJDK HotSpot production-workload and regression suite for JDK 8–25: 13 p
 
 Detailed per-workload state: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md). Measurement method and validity gates: [`METHODOLOGY.md`](METHODOLOGY.md). Each workload's `IMPLEMENTATION_NOTES.md` explains its design and limits.
 
-## Current state (2026-10-20)
+## Current state (2026-10-25)
 
-- `01-fintech-ledger` is the only **Tier 2** (measurement-ready) workload. Everything else is Tier 0/1: correctness and contract smoke tests, not benchmark numbers.
+- `01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway` and `13-large-monolith` are **Tier 2** (measurement-ready). Everything else is Tier 1: correctness and contract smoke tests, not benchmark numbers.
 - There are **no** measurement-valid published results. Do not add any until a run on controlled hardware passes every validity gate.
 - `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range.
 
