@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0.0",
+  "app_dir": "app",
+  "main_class": "com.palaashatri.bench.b07.app.BenchmarkApp",
+  "token_prefix": "coldstart",
+  "identity_path": "/runtime",
+  "load_shape": "startup",
+  "startup": {
+    "submit_path": "/api/v1/coldstart/measure",
+    "modes": ["default", "no-cds", "appcds"],
+    "starts_per_mode": 10,
+    "response_field": "time_to_health_ms"
+  },
+  "correctness": [
+    "maven",
+    "-B",
+    "-q",
+    "test"
+  ],
+  "build": [
+    "maven",
+    "-B",
+    "-q",
+    "package",
+    "-DskipTests",
+    "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+    "-Dmdep.outputFile=target/classpath.txt"
+  ],
+  "classpath_file": "target/classpath.txt",
+  "classpath_prefix": [
+    "target/07-coldstart-suite-app-0.1.0.jar"
+  ]
+}

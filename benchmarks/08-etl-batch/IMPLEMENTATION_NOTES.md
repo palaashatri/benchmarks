@@ -42,12 +42,17 @@ therefore never reports zero throughput. `failure` carries the reason for a fail
 
 ## Validity
 
-This lane is **Tier 1 and not a benchmark**:
+This workload is **Tier 2** through the engine's `jobs` load shape (`tier2.json`). The engine launches the
+application JVM, submits jobs on the open-loop schedule, and times each job from its intended submission to the
+completion its status endpoint reports. A job whose output digest does not match is an error in its phase. The
+engine records the application JVM's GC, native memory, flight recording, CPU and resident memory.
+
+Limits that still apply:
 
 - Data scale and storage are fixed in code; a benchmark would need them controlled by the controller.
-- The harness submits jobs and measures no load. Jobs run asynchronously, so a completion-rate measure
-  needs the controller to wait for jobs.
-- There is no Tier 2 telemetry for this workload yet.
+- Job completion is polled every 100 ms, so each latency has that resolution.
+- The run uses its own job rate, in jobs per second. It is not part of the shared request-rate matrix
+  (`experiments/tier2-matrix.yaml`).
 
 ## Limits
 

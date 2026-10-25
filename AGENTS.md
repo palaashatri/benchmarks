@@ -6,7 +6,7 @@ Detailed per-workload state: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.
 
 ## Current state (2026-10-25)
 
-- `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range. Tier 2 (measurement-ready in code): `00`–`05`, `09`–`13`. Tier 1: `06`, `07`, `08`.
+- `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range. Every workload, `00`–`13`, is Tier 2 (measurement-ready in code). `06`, `07` and `08` run through the engine's `framed-tcp`, `startup` and `jobs` load shapes, outside the shared request-rate matrix.
 - `02`, `10` and `11` are Tier 2 with process-tree telemetry: the gateway and every child JVM it starts are sampled, logged and captured. Each child writes its own native memory summary and flight recording as it exits, and each reported child must be observed (see `IMPLEMENTATION_STATUS.md`).
 - There are **no** measurement-valid published results. Do not add any until a run on controlled hardware passes every validity gate.
 

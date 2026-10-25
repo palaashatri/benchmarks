@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0.0",
+  "app_dir": "app",
+  "main_class": "com.palaashatri.bench.b08.app.BenchmarkApp",
+  "token_prefix": "etl",
+  "identity_path": "/runtime",
+  "load_shape": "jobs",
+  "jobs": {
+    "submit_path": "/api/v1/etl/run",
+    "status_path": "/api/v1/etl/{job_id}/status",
+    "job_id_field": "job_id",
+    "state_field": "status",
+    "completed_state": "completed",
+    "failed_state": "failed"
+  },
+  "correctness": [
+    "maven",
+    "-B",
+    "-q",
+    "test"
+  ],
+  "build": [
+    "maven",
+    "-B",
+    "-q",
+    "package",
+    "-DskipTests",
+    "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+    "-Dmdep.outputFile=target/classpath.txt"
+  ],
+  "classpath_file": "target/classpath.txt",
+  "classpath_prefix": [
+    "target/classes"
+  ]
+}

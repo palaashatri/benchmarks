@@ -52,9 +52,9 @@ Quiet-machine preflight (`benchctl preflight`, run before and after each measure
 
 ## Lanes
 
-The startup, jobs and chat lanes (06, 07, 08) run five repetitions, sample the host before and after the lane, and apply the same gates as the Tier 2 engine: run kind, host preflight, repetition count and failures, and critical host state identical across repetitions (`Tier2.sharedReasons`). Each lane adds its own correctness gates and a spread gate: the coefficient of variation of its primary metric across repetitions must not exceed 10 % (`Tier2.spreadReason`, provisional). A failed repetition contributes no value to a statistic, and it is never zeroed.
+The startup and chat lanes (06, 07) and the jobs lane (08) run five repetitions, sample the host before and after the lane, and apply the same gates as the Tier 2 engine: run kind, host preflight, repetition count and failures, and critical host state identical across repetitions (`Tier2.sharedReasons`). Each lane adds its own correctness gates and a spread gate: the coefficient of variation of its primary metric across repetitions must not exceed 10 % (`Tier2.spreadReason`, provisional). A failed repetition contributes no value to a statistic, and it is never zeroed.
 
-The jobs lane is open loop. Jobs are due at fixed instants; a job that starts late still counts its full wait from the instant it was due. A schedule that falls behind in any repetition is a lane reason. Benchmark results are refused for workloads whose catalogue tier is below 2, so a lane never produces a measurement-valid envelope while its workload is Tier 1.
+The jobs lane is open loop. Jobs are due at fixed instants; a job that starts late still counts its full wait from the instant it was due. A schedule that falls behind in any repetition is a lane reason. Benchmark results are refused for workloads whose catalogue tier is below 2. The workloads behind all three lanes are Tier 2, so their envelopes can be measurement-valid once every gate passes on controlled hardware. The Tier 2 engine drives the same job driver for `08` through the `jobs` load shape, so the lane and the engine time jobs identically.
 
 ## Comparison validity
 

@@ -58,15 +58,19 @@ public final class Execution {
             allValid &= Boolean.TRUE.equals(result.get("measurement_valid"));
             outputs.add(result);
         }
+        Map<String, Object> runDocument = Json.map(
+                "schema_version", "1.0.0",
+                "run_kind", runKind,
+                "measurement_valid", allValid,
+                "results", outputs);
         try {
-            Files.writeString(runDirectory.resolve("result.json"), Json.pretty(Json.map(
-                    "schema_version", "1.0.0",
-                    "run_kind", runKind,
-                    "measurement_valid", allValid,
-                    "results", outputs)), StandardCharsets.UTF_8);
+            Files.writeString(runDirectory.resolve("result.json"), Json.pretty(runDocument), StandardCharsets.UTF_8);
         } catch (IOException exception) {
             throw new BenchError("cannot write the run result: " + exception.getMessage(), exception);
         }
+        Path html = Report.writeDocument(runDirectory.resolve("report.html"),
+                String.valueOf(runDirectory.getFileName()), runDocument);
+        out.print(Report.runSummary(runDirectory, runDocument, html));
         return runDirectory;
     }
 
