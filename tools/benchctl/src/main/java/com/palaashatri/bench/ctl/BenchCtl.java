@@ -308,14 +308,17 @@ public final class BenchCtl {
             }
             default -> throw new BenchError("unknown lane: " + arguments[0]);
         };
+        Path target = Path.of(flags.get("--out"));
         try {
-            Path target = Path.of(flags.get("--out"));
             Files.createDirectories(target.toAbsolutePath().getParent());
             Files.writeString(target, Json.pretty(result), java.nio.charset.StandardCharsets.UTF_8);
         } catch (IOException exception) {
             throw new BenchError("cannot write the lane envelope: " + exception.getMessage(), exception);
         }
-        out.println("wrote " + flags.get("--out"));
+        String label = String.valueOf(result.getOrDefault("benchmark", arguments[0] + " lane"));
+        Path html = Report.writeDocument(Report.reportBeside(target), label, result);
+        out.print(Report.textSummary(label, result, html));
+        out.println("envelope: " + target);
         return 0;
     }
 

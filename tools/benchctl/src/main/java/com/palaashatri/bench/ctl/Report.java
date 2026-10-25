@@ -63,6 +63,22 @@ final class Report {
             .banner ul { margin: 6px 0 0 18px; padding: 0; }
             figure { margin: 12px 0; } figure svg { max-width: 100%; height: auto; }
             code { font-size: 13px; word-break: break-all; }
+            .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+            .card { background: #f5f5f7; border-radius: 8px; padding: 10px 12px; }
+            .card .label { font-size: 12px; color: #6e6e73; text-transform: uppercase; letter-spacing: .04em; }
+            .card .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+            .card .unit { font-size: 13px; font-weight: 400; color: #6e6e73; }
+            svg text:not([fill]) { fill: currentColor; }
+            @media (prefers-color-scheme: dark) {
+                body { background: #161617; color: #f5f5f7; }
+                h2 { border-bottom-color: #3a3a3d; }
+                th { background: #232326; }
+                th, td { border-bottom-color: #3a3a3d; }
+                .card { background: #232326; }
+                .card .label, .card .unit, td.unknown, .unknown { color: #98989d; }
+                .banner.valid { background: #1b3a1f; }
+                .banner.diagnostic { background: #3d2b10; }
+            }
             """;
 
     static final int CHART_WIDTH = 640;
@@ -93,6 +109,24 @@ final class Report {
             throw new BenchError("cannot write " + output + ": " + exception.getMessage(), exception);
         }
         return output;
+    }
+
+    /** Writes one HTML report for a result document: a workload envelope, or a whole run with its items. */
+    static Path writeDocument(Path output, String label, Map<String, Object> document) {
+        try {
+            Files.writeString(output, renderReport(expandRunEnvelopes(List.of(new Entry(label, document)))),
+                    StandardCharsets.UTF_8);
+        } catch (IOException exception) {
+            throw new BenchError("cannot write " + output + ": " + exception.getMessage(), exception);
+        }
+        return output;
+    }
+
+    /** The HTML report beside a result file: {@code envelope.json} is reported in {@code envelope.html}. */
+    static Path reportBeside(Path file) {
+        String name = String.valueOf(file.getFileName());
+        int dot = name.lastIndexOf('.');
+        return file.resolveSibling((dot > 0 ? name.substring(0, dot) : name) + ".html");
     }
 
     /** Render one HTML document covering the given entries. */
@@ -371,6 +405,33 @@ final class Report {
         return value == null ? UNKNOWN : escape(value.toString());
     }
 
+    /** Headline numbers: the aggregate median when the run has one, otherwise the single KPI value. */
+    private static String summaryCards(Map<String, Object> document) {
+        Map<String, Object> aggregate = Json.asMap(document.get("aggregate"));
+        StringBuilder cards = new StringBuilder("<div class='cards'>");
+        cards.append(card("Throughput", headline(document, aggregate, "throughput"), "req/s"));
+        cards.append(card("p99 latency", headline(document, aggregate, "p99_ms"), "ms"));
+        cards.append(card("GC pause p99", headline(document, aggregate, "gc_pause_p99_ms"), "ms"));
+        cards.append(card("Peak RSS", headline(document, aggregate, "rss_mb_max"), "MiB"));
+        boolean valid = Boolean.TRUE.equals(document.get("measurement_valid"))
+                && "benchmark".equals(document.get("run_kind"));
+        cards.append("<div class='card'><div class='label'>Verdict</div><div class='value'>")
+                .append(valid ? "measurement-valid" : "<span class='unknown'>diagnostic</span>")
+                .append("</div></div>");
+        return cards.append("</div>").toString();
+    }
+
+    private static Object headline(Map<String, Object> document, Map<String, Object> aggregate, String key) {
+        Object median = dig(aggregate, key, "median");
+        return median != null ? median : dig(document, "kpis", key);
+    }
+
+    private static String card(String label, Object value, String unit) {
+        String shown = value == null ? "<span class='unknown'>" + UNKNOWN + "</span>" : formatNumber(value);
+        return "<div class='card'><div class='label'>" + escape(label) + "</div><div class='value'>" + shown
+                + " <span class='unit'>" + escape(unit) + "</span></div></div>";
+    }
+
     // ---- charts -----------------------------------------------------------------------------------------
 
     private static double scaleTop(List<Double> values) {
@@ -596,6 +657,7 @@ final class Report {
         List<String> parts = new ArrayList<>();
         parts.add("<h2>" + escape(label) + "</h2>");
         parts.add(banner(document));
+        parts.add(summaryCards(document));
         parts.add(identityTable(document));
         if (document.get("aggregate") instanceof Map<?, ?>) {
             parts.add("<h3>Aggregate over repetitions</h3>");
@@ -662,5 +724,192 @@ final class Report {
         return "<h2>Comparison</h2><table><tr><th>Run</th><th>Runtime</th><th>Collector</th><th>Valid</th>"
                 + "<th>Throughput median (req/s)</th><th>Throughput 95% CI</th>"
                 + "<th>Outcome vs. baseline</th></tr>" + rows + "</table>";
+    }
+
+    // ---- terminal summary -------------------------------------------------------------------------------
+
+    private static final int TEXT_WIDTH = 78;
+    private static final int BAR_WIDTH = 30;
+    private static final int SPARK_WIDTH = 60;
+    private static final int REASONS_SHOWN = 4;
+    /** ASCII only, so the summary prints the same on every console, including Windows code pages. */
+    private static final String SPARK_RAMP = " .:-=+*#%@";
+    private static final String INDENT = " ".repeat(14);
+
+    /**
+     * The terminal summary: verdict, aggregate metrics, per-repetition bars and per-second sparklines. Unknown values
+     * print as "unknown" and never draw a bar or a sparkline point.
+     */
+    static String textSummary(String label, Map<String, Object> document, Path htmlPath) {
+        StringBuilder text = new StringBuilder(heading(label));
+        boolean valid = Boolean.TRUE.equals(document.get("measurement_valid"))
+                && "benchmark".equals(document.get("run_kind"));
+        List<Map<String, Object>> repetitions = repetitionMaps(document);
+        long passed = repetitions.stream().filter(item -> "passed".equals(item.get("status"))).count();
+        text.append(row("runtime", textValue(document.get("runtime"))))
+                .append(row("run kind", textValue(document.get("run_kind"))))
+                .append(row("tier", textValue(document.get("implementation_tier"))))
+                .append(row("repetitions", repetitions.isEmpty()
+                        ? UNKNOWN : passed + " of " + repetitions.size() + " passed"))
+                .append(row("verdict", valid ? "MEASUREMENT-VALID" : "NOT measurement-valid (diagnostics only)"));
+        List<Object> reasons = Json.asList(document.get("invalid_reasons"));
+        for (Object reason : reasons.subList(0, Math.min(reasons.size(), REASONS_SHOWN))) {
+            text.append(INDENT).append("- ").append(reason).append('\n');
+        }
+        if (reasons.size() > REASONS_SHOWN) {
+            text.append(INDENT).append("- and ").append(reasons.size() - REASONS_SHOWN)
+                    .append(" more; see the HTML report\n");
+        }
+        Map<String, Object> aggregate = Json.asMap(document.get("aggregate"));
+        List<String> metricRows = new ArrayList<>();
+        int unmeasured = 0;
+        for (String[] definition : AGGREGATE_METRICS) {
+            Map<String, Object> metric = Json.asMap(aggregate.get(definition[0]));
+            if (metric.get("median") != null) {
+                metricRows.add(metricRow(definition, metric));
+            } else if (aggregate.get(definition[0]) instanceof Map<?, ?>) {
+                unmeasured++;
+            }
+        }
+        if (metricRows.isEmpty()) {
+            text.append("\nNo aggregate metrics were recorded.\n");
+        } else {
+            text.append('\n').append(String.format(Locale.ROOT, "%-50s %-7s %4s %12s %8s  %s", "Metric", "Unit", "n",
+                    "Median", "CV", "95% CI of mean")).append('\n');
+            metricRows.forEach(line -> text.append(line).append('\n'));
+            if (unmeasured > 0) {
+                text.append(unmeasured).append(" more metrics were not measured in this run (see the HTML report)\n");
+            }
+        }
+        appendBars(text, "Throughput", "req/s", repetitions, "load", "kpis", "throughput");
+        appendBars(text, "p99 latency", "ms", repetitions, "load", "kpis", "p99_ms");
+        appendBars(text, "GC pause p99", "ms", repetitions, "telemetry", "gc", "p99_ms");
+        appendSparklines(text, "Delivered per second", "req/s", repetitions, "load", "series", "completed");
+        appendSparklines(text, "p50 latency per second", "ms", repetitions, "load", "series", "p50_ms");
+        if (htmlPath != null) {
+            text.append("\nHTML report: ").append(htmlPath).append('\n');
+        }
+        return text.toString();
+    }
+
+    /** The terminal summary for a whole run: its workloads, the overall verdict and where the report is. */
+    static String runSummary(Path runDirectory, Map<String, Object> document, Path htmlPath) {
+        List<Object> items = Json.asList(document.get("results"));
+        long valid = items.stream().filter(item -> Boolean.TRUE.equals(Json.asMap(item).get("measurement_valid"))).count();
+        boolean allValid = !items.isEmpty() && valid == items.size();
+        return heading("run " + runDirectory.getFileName())
+                + row("workloads", items.size() + " (" + valid + " measurement-valid)")
+                + row("verdict", allValid ? "MEASUREMENT-VALID" : "NOT measurement-valid (diagnostics only)")
+                + row("directory", runDirectory.toString())
+                + row("HTML report", htmlPath.toString()) + "\n";
+    }
+
+    private static String heading(String label) {
+        String start = "== " + label + " ";
+        return start + "=".repeat(Math.max(3, TEXT_WIDTH - start.length())) + "\n\n";
+    }
+
+    private static String row(String name, String value) {
+        return String.format(Locale.ROOT, "%-13s %s", name, value) + "\n";
+    }
+
+    private static String textValue(Object value) {
+        return value == null ? UNKNOWN : value.toString();
+    }
+
+    private static List<Map<String, Object>> repetitionMaps(Map<String, Object> document) {
+        List<Map<String, Object>> repetitions = new ArrayList<>();
+        for (Object item : Json.asList(document.get("repetitions"))) {
+            repetitions.add(Json.asMap(item));
+        }
+        return repetitions;
+    }
+
+    private static String metricRow(String[] definition, Map<String, Object> metric) {
+        Object cv = metric.get("coefficient_of_variation");
+        String cvText = cv instanceof Number number ? String.format(Locale.ROOT, "%.1f%%", number.doubleValue() * 100)
+                : UNKNOWN;
+        return String.format(Locale.ROOT, "%-50s %-7s %4s %12s %8s  %s", definition[1], definition[2],
+                formatNumber(metric.get("count")), formatNumber(metric.get("median")), cvText, intervalText(metric));
+    }
+
+    /** One bar per repetition, scaled to the largest value of that metric. A missing value is "unknown", never a bar. */
+    private static void appendBars(StringBuilder text, String title, String unit,
+                                   List<Map<String, Object>> repetitions, String... keys) {
+        List<Double> values = repetitionValues(repetitions, keys);
+        if (values.stream().allMatch(value -> value == null)) {
+            return;
+        }
+        double top = values.stream().filter(value -> value != null).mapToDouble(Double::doubleValue).max().orElse(0);
+        text.append('\n').append(title).append(" per repetition (").append(unit).append(")\n");
+        for (int index = 0; index < values.size(); index++) {
+            Double value = values.get(index);
+            String label = String.format(Locale.ROOT, "  rep %-3d ", index + 1);
+            if (value == null) {
+                text.append(label).append(UNKNOWN).append('\n');
+            } else {
+                int filled = top > 0 ? Math.min(BAR_WIDTH, Math.max(0, (int) Math.round(BAR_WIDTH * value / top))) : 0;
+                text.append(label).append('[').append("#".repeat(filled)).append(" ".repeat(BAR_WIDTH - filled))
+                        .append("] ").append(formatNumber(value)).append('\n');
+            }
+        }
+    }
+
+    /** One sparkline per repetition, one character per second. */
+    private static void appendSparklines(StringBuilder text, String title, String unit,
+                                         List<Map<String, Object>> repetitions, String... keys) {
+        StringBuilder rows = new StringBuilder();
+        for (int index = 0; index < repetitions.size(); index++) {
+            List<Double> series = doubles(dig(repetitions.get(index), keys));
+            if (!series.isEmpty()) {
+                rows.append(String.format(Locale.ROOT, "  rep %-3d %s", index + 1, sparkline(series))).append('\n');
+            }
+        }
+        if (!rows.isEmpty()) {
+            text.append('\n').append(title).append(" (").append(unit).append(", one character per second)\n")
+                    .append(rows);
+        }
+    }
+
+    /** A sparkline over the ramp; a missing second is "?", and the line ends with its range. */
+    static String sparkline(List<Double> series) {
+        List<Double> points = series.size() > SPARK_WIDTH ? downsample(series) : series;
+        List<Double> known = points.stream().filter(point -> point != null).toList();
+        if (known.isEmpty()) {
+            return "?".repeat(points.size()) + "  " + UNKNOWN;
+        }
+        double low = known.stream().mapToDouble(Double::doubleValue).min().getAsDouble();
+        double high = known.stream().mapToDouble(Double::doubleValue).max().getAsDouble();
+        StringBuilder line = new StringBuilder();
+        for (Double point : points) {
+            if (point == null) {
+                line.append('?');
+            } else {
+                int step = high > low
+                        ? (int) Math.round((point - low) / (high - low) * (SPARK_RAMP.length() - 1))
+                        : SPARK_RAMP.length() - 1;
+                line.append(SPARK_RAMP.charAt(step));
+            }
+        }
+        return line + "  " + formatNumber(low) + " .. " + formatNumber(high);
+    }
+
+    /** Averages a long series into {@link #SPARK_WIDTH} buckets; a bucket with no measured point stays null. */
+    private static List<Double> downsample(List<Double> series) {
+        List<Double> buckets = new ArrayList<>();
+        for (int bucket = 0; bucket < SPARK_WIDTH; bucket++) {
+            int from = bucket * series.size() / SPARK_WIDTH;
+            int to = Math.max(from + 1, (bucket + 1) * series.size() / SPARK_WIDTH);
+            double sum = 0;
+            int count = 0;
+            for (Double point : series.subList(from, to)) {
+                if (point != null) {
+                    sum += point;
+                    count++;
+                }
+            }
+            buckets.add(count > 0 ? sum / count : null);
+        }
+        return buckets;
     }
 }

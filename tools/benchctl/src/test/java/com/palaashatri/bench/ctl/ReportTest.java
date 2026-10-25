@@ -92,7 +92,7 @@ class ReportTest {
     @Test
     void unknownMetricsRenderAsUnknownNeverZero() {
         String html = Report.renderReport(List.of(entry("run-a", benchmarkResult(1000.0))));
-        String gcRow = html.split("GC pause p99", -1)[1].split("</tr>", -1)[0];
+        String gcRow = html.split("<td>GC pause p99</td>", -1)[1].split("</tr>", -1)[0];
         // The sample count (0) is a real count; the measured statistics must be unknown.
         assertTrue(gcRow.contains("<td class=\"num unknown\">unknown</td>"), gcRow);
         assertFalse(gcRow.contains("<td class=\"num\">0</td><td class=\"num\">0</td>"), gcRow);

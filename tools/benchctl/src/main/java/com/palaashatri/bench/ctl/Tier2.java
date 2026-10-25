@@ -283,11 +283,9 @@ public final class Tier2 {
         result.put("outliers", outlierReport(repetitions));
         result.put("aggregate", aggregate);
         writeJson(output.resolve("result.json"), result);
+        Path report = Report.writeDocument(output.resolve("report.html"), workload.id(), result);
         writeJson(output.resolve("checksums.json"), Digest.tree(output));
-        out.print(Json.pretty(Json.map(
-                "output", output.toString(),
-                "measurement_valid", validity.valid(),
-                "invalid_reasons", validity.reasons())));
+        out.print(Report.textSummary(workload.id(), result, report));
         return result;
     }
 
