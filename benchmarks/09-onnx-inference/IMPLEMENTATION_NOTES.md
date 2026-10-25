@@ -11,7 +11,7 @@ A seeded 4 → 64 → 3 network (ReLU, softmax). Its weights come from `Classifi
   `OnnxInferenceEngine` opens an `OrtSession` over those bytes with ONNX Runtime 1.18.0 and reports
   `mode = onnx-runtime`.
 - **Dependency-free lane** (`app/src/main/java`): `JavaFallbackEngine` is the pure-Java reference and
-  reports `mode = java-fallback`. `run.sh` compiles only this lane.
+  reports `mode = java-fallback`. the Maven test compiles only this lane.
 
 An engine is selected with `ServiceLoader`. The ONNX provider is registered only in the Maven build,
 so the smoke build cannot report ONNX. A provider whose session fails to load is a startup error, not
@@ -28,7 +28,7 @@ a silent fallback.
 
 ## Verification
 
-- `cd app && ./run.sh test` (smoke, javac): the fallback is served; `mode` is `java-fallback` and
+- `cd app && ./mvnw -B test` (smoke, javac): the fallback is served; `mode` is `java-fallback` and
   `onnx_session_active` is `false`.
 - `mvn -B -f app/pom.xml test`: runs the smoke suite, then `OnnxEquivalenceCheck`. The check requires
   the ORT session to match the Java reference within 1e-5 on 1,000 seeded random inputs with no

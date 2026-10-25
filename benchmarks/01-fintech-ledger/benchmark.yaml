@@ -9,6 +9,6 @@
   "process_model":"single application JVM",
   "measurement_valid":false,
   "invalid_reasons":["application-process telemetry and open-loop shared harness are not yet integrated"],
-  "correctness_command":"cd app && ./run.sh test",
+  "correctness_command":"cd app && ./mvnw -B test",
   "operations":["POST /transfers","GET /accounts/{id}/balance","GET /accounts/{id}/transactions"]
 }

@@ -13,12 +13,12 @@ restart distribution. The benchmark claim is limited to the container and traver
 
 ## How it is built
 
-- `app/tools/generate_graph.py` (stdlib Python) writes the component sources and a `Manifest`.
+- `app/tools/GenerateGraph.java` (single-file Java) writes the component sources and a `Manifest`.
   Each component is `Node_mXX_rYY` with `@Bean("mXX-rYY")`. A component depends on:
   - its primary: the previous row of its module (`rYY-1`), absent on row 0;
   - its secondary: the same row of the previous module (`mXX-1`), absent in module 0.
   Dependencies only point backwards, so the graph is acyclic.
-- `run.sh build` runs the generator, compiles the hand-written sources with the generated ones
+- the Maven build runs the generator, compiles the hand-written sources with the generated ones
   (`javac --release 17`) and writes `build/run-sh/classpath.txt`.
 - Maven runs the same generator in `generate-sources` and adds its output as a source root.
 
@@ -36,7 +36,7 @@ restart distribution. The benchmark claim is limited to the container and traver
 
 ## Correctness
 
-`./run.sh test` checks:
+`./mvnw -B test` checks:
 - every component is wired (`wired_components == components`);
 - the Java reference result (computed at startup from the wired graph) equals `expected_result`,
   which the generator computes in Python from its own model of the wiring. A container that wires
@@ -46,7 +46,7 @@ restart distribution. The benchmark claim is limited to the container and traver
 - `/metrics` exposes the component gauge.
 
 `mvn test` runs the same script (`exec` in the `test` phase). The harness smoke runs through
-`tools/workload_tests/run_harness.sh` with the shared functional client.
+the workload harness Maven test, which uses the shared functional client.
 
 ## Routes
 
@@ -59,7 +59,7 @@ restart distribution. The benchmark claim is limited to the container and traver
 ## Measurement path
 
 Tier 2 through the shared engine (`tier2.json`, `app/contract/load-mix.tsv`): the engine builds the
-app with `./run.sh build`, checks identity on `/runtime`, runs the correctness gate and drives the
+app with the Maven build, checks identity on `/runtime`, runs the correctness gate and drives the
 load mix with open-loop HdrHistogram load. The mix is 95% traversals and 5% graph reads.
 
 No measurement-valid result exists. Validity needs the controlled-hardware run described in

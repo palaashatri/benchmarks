@@ -9,6 +9,6 @@
   "modes":["default","no-cds","appcds"],
   "measurement_valid":false,
   "invalid_reasons":["no controller startup lane: each sample is not a controlled process restart with repetitions, host preflight or page-cache control","measurements are taken on an uncontrolled host"],
-  "correctness_command":"cd app && ./run.sh test",
+  "correctness_command":"cd app && ./mvnw -B test",
   "operations":["POST /api/v1/coldstart/measure","GET /api/v1/coldstart/modes","GET /api/v1/coldstart/samples","GET /api/v1/jfr/stats"]
 }

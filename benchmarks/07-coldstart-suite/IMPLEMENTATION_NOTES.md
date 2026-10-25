@@ -50,10 +50,10 @@ and returned with each measurement, so the flags in a result come from the launc
 
 ## Tests
 
-- `app/run.sh test` starts the app from its JAR and checks: all three modes are available; each mode
+- `./mvnw -B test` in `app` starts the app from its JAR and checks: all three modes are available; each mode
   is measured; each child reports the expected `-Xshare` flag; the AppCDS child reports its
   `-XX:SharedArchiveFile`; an unknown mode is rejected; and one sample per mode is recorded.
-- `harness/run.sh test` runs the shared functional client against the app. Any failed request fails
+- `./mvnw -B test` in `harness` runs the shared functional client against the app. Any failed request fails
   the gate.
 
 ## Validity
@@ -79,10 +79,10 @@ default-archive children. Those numbers were not recorded as results.
   never mixed into a child measurement.
 - A SIGKILLed application leaves its child temporary directories behind. Children exit when their
   parent's stdin closes, but the parent cannot remove files after SIGKILL. The shared
-  `tools/workload_tests/test_architecture.py` stops applications with `kill()`, and its forced-exit
+  the workload Maven test stops applications with `kill()`, and its forced-exit
   test does so on purpose, so `bench-child-*` directories accumulate in the system temporary
   directory after those tests. This is a known gap in the shared test helper, not in this workload.
 
 ## Startup lane
 
-`tools/app_lanes.py startup` starts the application from its JAR, takes the application's own spawn-to-ready time for each child JVM under each mode, and writes a calibration envelope with the median, the median absolute deviation, a bootstrap interval, outliers and any failures. The driver cross-checks its times against the application's recorded samples. Failures are counted, not dropped.
+`benchctl lane startup` starts the application from its JAR, takes the application's own spawn-to-ready time for each child JVM under each mode, and writes a calibration envelope with the median, the median absolute deviation, a bootstrap interval, outliers and any failures. The driver cross-checks its times against the application's recorded samples. Failures are counted, not dropped.

@@ -16,7 +16,7 @@
     "smoke results are never benchmark output",
     "ONNX session correctness is verified by mvn test, not by measurement runs"
   ],
-  "correctness_command": "cd app && ./run.sh test && mvn -B -f app/pom.xml test",
+  "correctness_command": "cd app && ./mvnw -B test",
   "operations": [
     "POST /api/v1/inference/classify",
     "GET /api/v1/inference/health"

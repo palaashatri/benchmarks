@@ -15,7 +15,7 @@
     "gRPC is exercised by the Maven gate (mvn test), not by measurement runs",
     "no external venue or market-data connectivity"
   ],
-  "correctness_command": "cd app && ./run.sh test && mvn -B -f app/pom.xml test",
+  "correctness_command": "cd app && ./mvnw -B test",
   "operations": [
     "POST /orders",
     "GET /orders/{id}",

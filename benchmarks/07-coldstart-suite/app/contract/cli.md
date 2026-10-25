@@ -1,6 +1,6 @@
 # CLI contract for Coldstart Function Suite
 
-Entrypoint: `BenchmarkApp` via `./gradlew run --args="..."` or Maven exec.
+Entrypoint: `BenchmarkApp` via the Maven exec goal.
 
 Supported benchmark operations:
 - `json-transform`

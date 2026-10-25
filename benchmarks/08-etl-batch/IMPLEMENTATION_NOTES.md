@@ -32,13 +32,13 @@ therefore never reports zero throughput. `failure` carries the reason for a fail
 
 ## Tests
 
-- `app/run.sh test` starts the app, runs a job, and checks: unfinished values are null; the job
+- `./mvnw -B test` in `app` starts the app, runs a job, and checks: unfinished values are null; the job
   completes; 50,000 records; `digest_match` is true; the two digests are equal and are SHA-256 length;
   throughput and elapsed time are positive; the job is listed with its digest match.
 - The mutation check was done in a scratch copy. The pipeline dropped its last record before
   aggregating: the job failed with `digest_mismatch`, the two digests differed, and the app test
   failed.
-- `harness/run.sh test` runs the shared functional client (run, list, health).
+- `./mvnw -B test` in `harness` runs the shared functional client (run, list, health).
 
 ## Validity
 
@@ -59,4 +59,4 @@ This lane is **Tier 1 and not a benchmark**:
 
 ## Job lane
 
-`tools/app_lanes.py jobs` submits jobs (sequentially or with a concurrency), polls each until it completes, and takes the application's own throughput, I/O and elapsed figures. Failed and timed-out jobs are listed in the envelope, and digest matches are counted. Resident memory is sampled from `/proc` for the application process.
+`benchctl lane jobs` submits jobs (sequentially or with a concurrency), polls each until it completes, and takes the application's own throughput, I/O and elapsed figures. Failed and timed-out jobs are listed in the envelope, and digest matches are counted. Resident memory is sampled from `/proc` for the application process.

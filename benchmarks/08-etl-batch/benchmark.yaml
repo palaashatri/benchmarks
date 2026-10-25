@@ -9,6 +9,6 @@
   "external_storage":false,
   "measurement_valid":false,
   "invalid_reasons":["data scale and storage backends are not controlled by the shared controller","the harness is a functional smoke client; it measures no load"],
-  "correctness_command":"cd app && ./run.sh test",
+  "correctness_command":"cd app && ./mvnw -B test",
   "operations":["POST /api/v1/etl/run","GET /api/v1/etl/{id}/status","GET /api/v1/etl/jobs"]
 }

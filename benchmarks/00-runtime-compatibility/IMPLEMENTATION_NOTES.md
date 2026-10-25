@@ -22,5 +22,5 @@ that computes differently is detected. The app is compiled with `--release 8` an
 - Compute only: no GC or allocation comparison beyond what the JVM reports, and no network.
 - Every runtime is measured separately; the compatibility question is whether the numbers and checksums
   agree, not whether one runtime is faster than another.
-- The controller's artifact lane still builds the Java 8 JAR through `./run.sh artifact`; that path is
+- The controller's artifact lane still builds the Java 8 JAR through the Maven build; that path is
   unchanged.

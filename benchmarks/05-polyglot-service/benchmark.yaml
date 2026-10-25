@@ -10,6 +10,6 @@
   "host_class_access":false,
   "measurement_valid":false,
   "invalid_reasons":["third-party interpreter workload is not a cross-JDK language-feature lane","the harness is a functional smoke client; it measures no load"],
-  "correctness_command":"cd app && ./run.sh test",
+  "correctness_command":"cd app && ./mvnw -B test",
   "operations":["POST /api/v1/score","POST /api/v1/score/rule/{id}","GET /api/v1/scripts"]
 }

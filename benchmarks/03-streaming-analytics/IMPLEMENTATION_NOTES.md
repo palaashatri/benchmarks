@@ -40,7 +40,7 @@ None. The app uses only JDK standard library (`com.sun.net.httpserver`, `java.ut
 ## Smoke Test Result
 
 ```
-REQUESTS=40 ./run.sh test
+./mvnw -B test
 ```
 
 Output (final run of 3):
@@ -55,7 +55,7 @@ All 40 requests succeeded across 3 runs.
 ## Deviations from Spec
 
 - Virtual threads used for HttpServer executor (per spec) and consumer threads (spec said "virtual threads on startup").
-- The `run.sh` SMOKE_GETS/SMOKE_POSTS paths were updated to match the new API routes (`/api/v1/events`, `/api/v1/windows/sensor-1`, `/api/v1/lag`).
+- The Maven smoke test SMOKE_GETS/SMOKE_POSTS paths were updated to match the new API routes (`/api/v1/events`, `/api/v1/windows/sensor-1`, `/api/v1/lag`).
 
 ## Tier 2 measurement
 

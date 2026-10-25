@@ -9,6 +9,6 @@
   "generated_components":1000,
   "measurement_valid":false,
   "invalid_reasons":["synthetic container, not a production dependency-injection framework; no persistence, transactions or framework startup work","no restart distribution"],
-  "correctness_command":"cd app && ./run.sh test",
+  "correctness_command":"cd app && ./mvnw -B test",
   "operations":["GET /api/v1/monolith/work","GET /api/v1/monolith/graph","GET /api/v1/monolith/warmup/status"]
 }

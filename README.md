@@ -1,12 +1,14 @@
 # OpenJDK Production Workload Benchmarks
 
-This repository is an OpenJDK HotSpot workload and regression suite. It contains 13 production-shaped workload prototypes, one Java 8-bytecode compatibility workload, and a controller that discovers installed JDKs, probes supported collectors and runtime capabilities, plans valid experiment combinations, and keeps smoke output separate from measurement-valid benchmark output.
+This repository is an OpenJDK HotSpot workload and regression suite. It contains 13 production-shaped workloads, one Java 8-bytecode compatibility workload, and a Java controller that discovers installed JDKs, probes supported collectors and runtime capabilities, plans valid experiment combinations, and keeps smoke output separate from measurement-valid benchmark output.
+
+It runs the same way on Linux, Windows and macOS. The only requirements are a JDK 17 or newer and git. There is no Python, and no shell logic beyond the two thin launchers.
 
 ## Current readiness
 
-Four workloads are **Tier 2** (measurement-ready in code): `01-fintech-ledger`, `09-onnx-inference`, `12-hft-trading-gateway` and `13-large-monolith`. Each runs through the same engine, which launches the application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes, and no measurement-valid results exist yet. Benchmark execution waits for controlled hardware.
+Eleven workloads are catalogued **Tier 2** (measurement-ready in code): `00` through `05` and `09` through `13`. The Tier 2 engine launches each application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes. No measurement-valid results exist yet, and benchmark execution waits for controlled hardware.
 
-All other workloads are honest Tier 0/Tier 1 prototypes. Their `run.sh test` entry points and Maven lifecycle verify contracts and correctness, not publication-grade performance.
+Workloads `02`, `10` and `11` measure the gateway process only. Their service JVMs have no per-process telemetry yet, so their numbers do not describe the whole system. Workloads `06`, `07` and `08` are Tier 1 and use their own measurement lanes.
 
 See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload state.
 
@@ -21,6 +23,8 @@ See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload
 
 ## Quick start
 
+Linux and macOS:
+
 ```bash
 ./benchctl doctor
 ./benchctl discover-runtimes
@@ -30,16 +34,23 @@ See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload
 ./benchctl run experiments/quick.yaml
 ```
 
-The experiment files use JSON syntax because JSON is valid YAML and lets the controller remain dependency-free.
+Windows (PowerShell or cmd):
+
+```bat
+benchctl.cmd doctor
+benchctl.cmd discover-runtimes
+```
+
+The first call builds the controller with the Maven wrapper; later calls reuse the jar. The experiment files use JSON syntax because JSON is valid YAML, so the controller needs no YAML library.
 
 Measurement, once a controlled host is available:
 
 ```bash
 ./benchctl preflight                         # the host must pass every check
-./benchctl fetch-jdks --feature 21           # OpenJDK 21 from the Ubuntu archive, signature-checked, into .benchctl/jdks
-./benchctl validate experiments/tier2-workloads.yaml
-./benchctl plan experiments/tier2-workloads.yaml
-./benchctl run experiments/tier2-workloads.yaml
+./benchctl fetch-jdks --feature 17 --feature 21   # Adoptium builds, SHA-256 checked, into .benchctl/jdks
+./benchctl validate experiments/tier2-matrix.yaml
+./benchctl plan experiments/tier2-matrix.yaml
+./benchctl run experiments/tier2-matrix.yaml
 ./benchctl report results/<run-id>           # readable HTML report with charts
 ```
 
@@ -50,14 +61,14 @@ Each application and harness builds with its own Maven wrapper, pinned to Maven 
 (cd benchmarks/01-fintech-ledger/harness && ./mvnw -B test)
 ```
 
-The compatibility workload can also be tested directly:
+The compatibility workload targets Java 8 bytecode and can be tested directly on any JDK 8 or newer:
 
 ```bash
-(cd benchmarks/00-runtime-compatibility/app && ./run.sh test)
-(cd benchmarks/00-runtime-compatibility/harness && ./run.sh test)
+(cd benchmarks/00-runtime-compatibility/app && ./mvnw -B test)
+(cd benchmarks/00-runtime-compatibility/harness && ./mvnw -B test)
 ```
 
-Its classes target Java 8 bytecode. During a `benchctl` experiment, the controller selects one discovered JDK with `javac`, builds the compatibility JAR once, stores its SHA-256 digest, and passes the same absolute artifact path to every selected runtime/collector combination.
+During a `benchctl` experiment, the controller selects one discovered JDK, builds the compatibility JAR once, stores its SHA-256 digest, and passes the same absolute artifact path to every selected runtime/collector combination.
 
 ## Result safety
 
@@ -78,15 +89,16 @@ Unknown measurements are `null`, never fake zeroes. `benchctl compare` rejects i
 ## Development checks
 
 ```bash
-python3 -m unittest discover -s tools/tests -v
-python3 tools/check_repository.py
+./mvnw -B -f tools/benchctl/pom.xml test     # controller unit tests
+./benchctl hygiene                           # repository hygiene and scope gate
 ./benchctl validate experiments/quick.yaml
 ./benchctl validate experiments/standard.yaml
+./benchctl validate experiments/gc-focused.yaml
 ./benchctl validate experiments/ledger-benchmark.yaml
-./benchctl validate experiments/tier2-workloads.yaml
+./benchctl validate experiments/tier2-matrix.yaml
 ./benchctl discover-runtimes
-bash tools/loadgen/run.sh test
-bash tools/workload_tests/run_common.sh
+./mvnw -B -f benchmarks/common/pom.xml test  # shared lifecycle and framed-TCP regressions
+./mvnw -B -f tools/loadgen/pom.xml test      # open-loop load generator self-test
 ```
 
-Workload-specific `run.sh` files remain compatibility smoke entry points. They are not authoritative benchmark orchestration except through `benchctl`.
+Workload `mvnw test` commands are listed under Quick start. CI runs the controller, shared modules and every workload on Ubuntu, Windows and macOS.
