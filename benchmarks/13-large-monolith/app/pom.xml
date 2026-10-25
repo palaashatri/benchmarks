@@ -23,6 +23,14 @@
       <snapshots><enabled>false</enabled></snapshots>
     </pluginRepository>
   </pluginRepositories>
+  <dependencies>
+        <dependency>
+          <groupId>org.junit.jupiter</groupId>
+          <artifactId>junit-jupiter</artifactId>
+          <version>5.10.2</version>
+          <scope>test</scope>
+        </dependency>
+  </dependencies>
   <build>
     <plugins>
       <plugin>
@@ -37,12 +45,13 @@
               <source>${project.basedir}/../../common/src/main/java</source>
             </sources></configuration>
           </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
+                      <execution><id>testkit-test-sources</id><phase>generate-test-sources</phase>
+                <goals><goal>add-test-source</goal></goals>
+                <configuration><sources>
+                  <source>${project.basedir}/../../../tools/testkit/src/main/java</source>
+                </sources></configuration>
+              </execution>
+            </executions>
       </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
@@ -50,14 +59,33 @@
         <version>3.3.0</version>
         <executions>
           <execution><id>generate-graph</id><phase>generate-sources</phase><goals><goal>exec</goal></goals>
-            <configuration><executable>python3</executable><workingDirectory>${project.basedir}</workingDirectory>
-              <arguments><argument>tools/generate_graph.py</argument><argument>--out</argument><argument>${project.build.directory}/generated-sources/graph</argument></arguments>
+            <configuration><executable>java</executable><workingDirectory>${project.basedir}</workingDirectory>
+              <arguments>
+                <argument>tools/GenerateGraph.java</argument>
+                <argument>--out</argument>
+                <argument>${project.build.directory}/generated-sources/graph</argument>
+              </arguments>
             </configuration>
           </execution>
-          <execution><id>smoke-correctness</id><phase>test</phase><goals><goal>exec</goal></goals>
-            <configuration><executable>sh</executable><workingDirectory>${project.basedir}</workingDirectory>
-              <arguments><argument>./run.sh</argument><argument>test</argument></arguments>
-            </configuration>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+              <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <version>3.2.5</version>
+          </plugin>
+          <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution><id>runtime-classpath</id><phase>prepare-package</phase><goals><goal>build-classpath</goal></goals>
+            <configuration><outputFile>${project.build.directory}/classpath.txt</outputFile></configuration>
           </execution>
         </executions>
       </plugin>

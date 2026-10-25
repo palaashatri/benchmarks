@@ -5,10 +5,23 @@
   "token_prefix": "onnx",
   "identity_path": "/runtime",
   "load_mix": "app/contract/load-mix.tsv",
-  "correctness": ["mvn", "-B", "-q", "-f", "pom.xml", "test"],
-  "build": ["mvn", "-B", "-q", "-f", "pom.xml", "compile",
-            "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath",
-            "-Dmdep.outputFile=target/classpath.txt"],
+  "correctness": [
+    "maven",
+    "-B",
+    "-q",
+    "test"
+  ],
+  "build": [
+    "maven",
+    "-B",
+    "-q",
+    "package",
+    "-DskipTests",
+    "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+    "-Dmdep.outputFile=target/classpath.txt"
+  ],
   "classpath_file": "target/classpath.txt",
-  "classpath_prefix": ["target/classes"]
+  "classpath_prefix": [
+    "target/classes"
+  ]
 }

@@ -6,13 +6,22 @@
   "identity_path": "/runtime",
   "load_mix": "app/contract/load-mix.tsv",
   "correctness": [
-    "./run.sh",
+    "maven",
+    "-B",
+    "-q",
     "test"
   ],
   "build": [
-    "./run.sh",
-    "build"
+    "maven",
+    "-B",
+    "-q",
+    "package",
+    "-DskipTests",
+    "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+    "-Dmdep.outputFile=target/classpath.txt"
   ],
-  "classpath_file": "build/classpath.txt",
-  "classpath_prefix": []
+  "classpath_file": "target/classpath.txt",
+  "classpath_prefix": [
+    "target/classes"
+  ]
 }
