@@ -9,6 +9,7 @@ import java.io.*;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
@@ -34,10 +35,13 @@ public final class MiniHttpServer {
     static final class JobState {
         final String jobId;
         volatile JobStatus status;
-        volatile long recordsProcessed;
-        volatile double recordsPerSecond;
-        volatile double ioThroughputMbS;
-        volatile long elapsedMs;
+        volatile Long recordsProcessed;
+        volatile Double recordsPerSecond;
+        volatile Double ioThroughputMbS;
+        volatile Long elapsedMs;
+        volatile String outputSha256;
+        volatile String referenceSha256;
+        volatile String failure;
         final long startedAt;
 
         JobState(String jobId) {
@@ -140,39 +144,43 @@ public final class MiniHttpServer {
     private void runBatchJob(JobState state) {
         state.status = JobStatus.RUNNING;
         long start = System.nanoTime();
+        Path tempInput = null;
+        Path tempOutput = null;
         try {
-            // Generate 50_000 CsvRecords deterministically
             long seed = state.jobId.hashCode() ^ 424242L;
             List<CsvRecord> records = generateRecords(50_000, seed);
 
-            // Write to temp file as CSV
-            Path tempInput = Files.createTempFile("etl-input-" + state.jobId + "-", ".csv");
+            tempInput = Files.createTempFile("etl-input-" + state.jobId + "-", ".csv");
             long bytesWritten = writeCsv(tempInput, records);
             ioBytesWrittenTotal.addAndGet(bytesWritten);
 
-            // Read back and transform
             List<CsvRecord> read = readCsv(tempInput);
+            if (read.size() != records.size()) {
+                throw new IllegalStateException("record_count_mismatch: wrote " + records.size() + ", read " + read.size());
+            }
 
-            // Filter value > 0.5, map enriched, aggregate by category
-            Map<String, DoubleSummaryStatistics> aggregated = read.stream()
-                .filter(r -> r.value() > 0.5)
-                .collect(Collectors.groupingBy(CsvRecord::category,
-                    Collectors.summarizingDouble(CsvRecord::value)));
-
-            // Write output
-            Path tempOutput = Files.createTempFile("etl-output-" + state.jobId + "-", ".csv");
-            long outBytes = writeAggregated(tempOutput, aggregated);
+            tempOutput = Files.createTempFile("etl-output-" + state.jobId + "-", ".csv");
+            Files.writeString(tempOutput, aggregate(read), StandardCharsets.UTF_8);
+            long outBytes = Files.size(tempOutput);
             ioBytesWrittenTotal.addAndGet(outBytes);
 
-            // Cleanup temp files
-            Files.deleteIfExists(tempInput);
-            Files.deleteIfExists(tempOutput);
+            // The reference comes from the in-memory records, never from the files. The only thing they share
+            // is the rounding the CSV applies, so the digests agree only if the file round trip, the parsing and
+            // the aggregation all do.
+            String reference = aggregate(records.stream().map(MiniHttpServer::asWritten).toList());
+            String outputDigest = sha256(Files.readAllBytes(tempOutput));
+            String referenceDigest = sha256(reference.getBytes(StandardCharsets.UTF_8));
+            state.outputSha256 = outputDigest;
+            state.referenceSha256 = referenceDigest;
+            if (!outputDigest.equals(referenceDigest)) {
+                throw new IllegalStateException("digest_mismatch");
+            }
 
             long elapsedMs = Math.max(1L, (System.nanoTime() - start) / 1_000_000L);
             double throughput = records.size() * 1000.0 / elapsedMs;
             double ioMbS = (bytesWritten + outBytes) / 1024.0 / 1024.0 / (elapsedMs / 1000.0);
 
-            state.recordsProcessed = records.size();
+            state.recordsProcessed = (long) records.size();
             state.recordsPerSecond = throughput;
             state.ioThroughputMbS = ioMbS;
             state.elapsedMs = elapsedMs;
@@ -185,7 +193,55 @@ public final class MiniHttpServer {
             log("job_completed", "\"job_id\":\"" + state.jobId + "\",\"records\":" + records.size() + ",\"throughput\":" + (long) throughput);
         } catch (Exception e) {
             state.status = JobStatus.FAILED;
-            log("job_failed", "\"job_id\":\"" + state.jobId + "\",\"error\":\"" + escape(e.getMessage() == null ? "unknown" : e.getMessage()) + "\"");
+            state.failure = e.getMessage() == null ? "unknown" : e.getMessage();
+            log("job_failed", "\"job_id\":\"" + state.jobId + "\",\"error\":\"" + escape(state.failure) + "\"");
+        } finally {
+            deleteQuietly(tempInput);
+            deleteQuietly(tempOutput);
+        }
+    }
+
+    /** Filters value > 0.5 and aggregates by category, in sorted category order. Output and reference use this. */
+    static String aggregate(List<CsvRecord> records) {
+        Map<String, double[]> sums = new TreeMap<>();
+        for (CsvRecord record : records) {
+            if (!(record.value() > 0.5)) continue;
+            double[] accumulator = sums.computeIfAbsent(record.category(), key -> new double[2]);
+            accumulator[0] += 1;
+            accumulator[1] += record.value();
+        }
+        StringBuilder out = new StringBuilder("category,count,sum,avg\n");
+        for (Map.Entry<String, double[]> entry : sums.entrySet()) {
+            double count = entry.getValue()[0];
+            double sum = entry.getValue()[1];
+            out.append(entry.getKey()).append(',').append((long) count).append(',')
+                    .append(String.format(Locale.ROOT, "%.6f", sum)).append(',')
+                    .append(String.format(Locale.ROOT, "%.6f", sum / count)).append('\n');
+        }
+        return out.toString();
+    }
+
+    /** The value as the CSV carries it: six decimal places. */
+    static CsvRecord asWritten(CsvRecord record) {
+        double rounded = Double.parseDouble(String.format(Locale.ROOT, "%.6f", record.value()));
+        return new CsvRecord(record.id(), record.category(), rounded, record.timestamp());
+    }
+
+    static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is required on every Java platform", unavailable);
+        }
+    }
+
+    /** Temporary files are removed on every path. A failed removal cannot change a job's result. */
+    private static void deleteQuietly(Path path) {
+        if (path == null) return;
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // Left for the operating system's temporary-file cleanup.
         }
     }
 
@@ -233,19 +289,31 @@ public final class MiniHttpServer {
         return out;
     }
 
-    private long writeAggregated(Path path, Map<String, DoubleSummaryStatistics> aggregated) throws IOException {
-        try (BufferedWriter w = Files.newBufferedWriter(path, StandardCharsets.UTF_8, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING)) {
-            w.write("category,count,sum,avg\n");
-            for (Map.Entry<String, DoubleSummaryStatistics> e : aggregated.entrySet()) {
-                DoubleSummaryStatistics s = e.getValue();
-                w.write(e.getKey() + "," + s.getCount() + "," + String.format(Locale.ROOT, "%.6f", s.getSum()) + "," + String.format(Locale.ROOT, "%.6f", s.getAverage()) + "\n");
-            }
-        }
-        return Files.size(path);
+    /** Values a job has not produced yet are null, never zero. */
+    private static String jobStateJson(JobState s) {
+        String digestMatch = s.outputSha256 == null || s.referenceSha256 == null
+                ? "null" : Boolean.toString(s.outputSha256.equals(s.referenceSha256));
+        return "{\"job_id\":\"" + s.jobId + "\",\"status\":\"" + s.status.name().toLowerCase(Locale.ROOT) + "\""
+                + ",\"records_processed\":" + nullable(s.recordsProcessed)
+                + ",\"records_per_second\":" + nullableFixed(s.recordsPerSecond)
+                + ",\"io_throughput_mb_s\":" + nullableFixed(s.ioThroughputMbS)
+                + ",\"elapsed_ms\":" + nullable(s.elapsedMs)
+                + ",\"output_sha256\":" + nullableText(s.outputSha256)
+                + ",\"reference_sha256\":" + nullableText(s.referenceSha256)
+                + ",\"digest_match\":" + digestMatch
+                + ",\"failure\":" + nullableText(s.failure) + "}";
     }
 
-    private static String jobStateJson(JobState s) {
-        return "{\"job_id\":\"" + s.jobId + "\",\"status\":\"" + s.status.name().toLowerCase() + "\",\"records_processed\":" + s.recordsProcessed + ",\"records_per_second\":" + String.format(Locale.ROOT, "%.2f", s.recordsPerSecond) + ",\"io_throughput_mb_s\":" + String.format(Locale.ROOT, "%.2f", s.ioThroughputMbS) + ",\"elapsed_ms\":" + s.elapsedMs + "}";
+    private static String nullable(Object value) {
+        return value == null ? "null" : value.toString();
+    }
+
+    private static String nullableFixed(Double value) {
+        return value == null ? "null" : String.format(Locale.ROOT, "%.2f", value);
+    }
+
+    private static String nullableText(String value) {
+        return value == null ? "null" : "\"" + escape(value) + "\"";
     }
 
     private static String escape(String raw) {

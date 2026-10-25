@@ -71,7 +71,7 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "local NIO ETL prototype"
+      "status": "local NIO ETL whose canonical output is checked by SHA-256 against an independent in-memory reference, with null for unfinished jobs; not yet a controller benchmark"
     },
     {
       "id": "09-onnx-inference",
