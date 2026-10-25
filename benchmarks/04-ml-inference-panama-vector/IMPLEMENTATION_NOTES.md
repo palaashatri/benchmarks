@@ -42,12 +42,6 @@ Routes implemented:
 
 `harness/run.sh`: passes `--threads 8 --runs 3` to the harness java invocation.
 
-`docker-compose.yml`: Grafana service extended with `GF_SECURITY_ADMIN_PASSWORD=admin` env and provisioning volume mounts.
-
-Grafana provisioning files created:
-- `harness/grafana/provisioning/datasources/prometheus.yaml`
-- `harness/grafana/provisioning/dashboards/dashboards.yaml`
-
 ## Dependencies added
 
 None — `jdk.incubator.vector` and `java.lang.foreign` are built-in JDK 21 modules.

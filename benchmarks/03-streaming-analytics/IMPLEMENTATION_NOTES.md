@@ -32,12 +32,6 @@ Upgraded from sequential for-loop to concurrent `ExecutorService`-based load:
 - Collects: GC total collection time (`ManagementFactory.getGarbageCollectorMXBeans()`), RSS (`ps -o rss=`), CPU (`OperatingSystemMXBean.getProcessCpuLoad()`).
 - `mode_kpis` reports `events_per_second`, `window_latency_ms`, `consumer_lag`.
 
-### Grafana (`harness/grafana/`)
-
-- Created `provisioning/datasources/prometheus.yaml` (Prometheus data source auto-wired).
-- Created `provisioning/dashboards/dashboards.yaml` (file provider pointing at `/var/lib/grafana/dashboards`).
-- Updated `dashboard.json` with 4 panels: Event Throughput, Consumer Lag, Active Windows, Request Rate.
-- Updated `docker-compose.yml` to mount provisioning and dashboard volumes; sets `GF_SECURITY_ADMIN_PASSWORD=admin`.
 
 ## Dependencies Added
 
