@@ -48,7 +48,7 @@ The old committed results were removed because they mixed smoke traffic with har
 - Single authoritative `AGENTS.md`.
 - Public-scope hygiene gate rejects proprietary/runtime-out-of-scope terminology.
 - Dependency-free `benchctl` controller.
-- OpenJDK runtime and collector capability discovery; `benchctl fetch-jdks` (verified SHA-256, OpenJDK HotSpot allow-list, safe extraction).
+- OpenJDK runtime and collector capability discovery; `benchctl fetch-jdks` installs OpenJDK 8, 11, 17, 21 and 25 from the Ubuntu archive. Each release is verified against the Ubuntu archive signing key, and each package against its index digest. Every install is validated by running `java` and `javac`, and by resolving the JVM's native libraries.
 - `benchctl preflight`: quiet-machine checks, also applied to every Tier 2 run.
 - Workload JDK compatibility bands and invalid-combination skipping.
 - Experiment validation, matrix planning, smoke orchestration and Tier 2 execution for every Tier 2 workload.
@@ -67,7 +67,7 @@ Everything below needs controlled hardware or a live environment. No code work i
 
 1. **Run the benchmark matrix on a controlled host.** Run `benchctl preflight` until it passes, then `./benchctl run experiments/tier2-workloads.yaml`. Expect the first runs to be invalid until the host passes every gate. Check the results with `benchctl report`.
 2. **Calibrate the provisional thresholds on that host.** These are the latency stability threshold and the warm-up window length, both set without hardware data.
-3. **Live verification of JDK fetching.** `benchctl fetch-jdks` follows the Foojay v3 Disco API shape. This sandbox cannot reach `api.foojay.io` (proxy policy denies it), so the live endpoint has only been exercised through local fixtures.
+3. **Foojay as a source** stays opt-in (`fetch-jdks --source foojay`). Its checksums are not signed, and its live endpoint has not been reachable from this sandbox.
 4. **Tier 2 for the remaining workloads** (for example 02, whose telemetry spans several JVMs). Not planned in this pass.
 5. **Tier 3 publication** of controlled-environment results, once they pass every gate. Until then, no publication claims.
 

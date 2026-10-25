@@ -36,7 +36,7 @@ Measurement, once a controlled host is available:
 
 ```bash
 ./benchctl preflight                         # the host must pass every check
-./benchctl fetch-jdks --feature 21           # verified OpenJDK HotSpot build into .benchctl/jdks
+./benchctl fetch-jdks --feature 21           # OpenJDK 21 from the Ubuntu archive, signature-checked, into .benchctl/jdks
 ./benchctl validate experiments/tier2-workloads.yaml
 ./benchctl plan experiments/tier2-workloads.yaml
 ./benchctl run experiments/tier2-workloads.yaml

@@ -27,6 +27,7 @@ from typing import Any, Iterable
 
 import benchctl_report
 import host_environment
+import jdk_archive
 import jdk_fetch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -777,13 +778,21 @@ def cmd_list_workloads(_: argparse.Namespace) -> int:
 
 
 def cmd_fetch_jdks(args: argparse.Namespace) -> int:
-    """Install verified OpenJDK builds under .benchctl/jdks, where discovery finds them."""
-    api_base = os.environ.get("BENCH_FOOJAY_API", jdk_fetch.DEFAULT_API)
+    """Install verified OpenJDK builds under .benchctl/jdks, where discovery finds them.
+
+    The default source is the Ubuntu archive, whose release signature is checked end to end.
+    Foojay is an explicit opt-in: its checksums are not signed.
+    """
     failures = 0
     for feature in args.feature:
         try:
-            print(jdk_fetch.install_jdk(feature, args.distribution, STATE_DIR / "jdks", api_base))
-        except jdk_fetch.FetchError as exception:
+            if args.source == "ubuntu":
+                path = jdk_archive.install_ubuntu_jdk(feature, STATE_DIR / "jdks")
+            else:
+                api_base = os.environ.get("BENCH_FOOJAY_API", jdk_fetch.DEFAULT_API)
+                path = jdk_fetch.install_jdk(feature, args.distribution, STATE_DIR / "jdks", api_base)
+            print(path)
+        except (jdk_archive.ArchiveError, jdk_fetch.FetchError) as exception:
             failures += 1
             print(f"ERROR JDK {feature}: {exception}", file=sys.stderr)
     return 0 if not failures else 2
@@ -912,7 +921,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
     fetch = subparsers.add_parser("fetch-jdks", help="install verified OpenJDK HotSpot builds for a JDK matrix")
     fetch.add_argument("--feature", type=int, action="append", required=True, help="feature release, e.g. 21")
-    fetch.add_argument("--distribution", default=jdk_fetch.ALLOWED_DISTRIBUTIONS[0], choices=jdk_fetch.ALLOWED_DISTRIBUTIONS)
+    fetch.add_argument(
+        "--source", choices=("ubuntu", "foojay"), default="ubuntu",
+        help="ubuntu: Ubuntu archive, signature-checked (default); foojay: Foojay API, SHA-256 only",
+    )
+    fetch.add_argument("--distribution", default=jdk_fetch.ALLOWED_DISTRIBUTIONS[0], choices=jdk_fetch.ALLOWED_DISTRIBUTIONS,
+                       help="foojay source only")
     fetch.set_defaults(func=cmd_fetch_jdks)
     preflight = subparsers.add_parser("preflight", help="check the host is quiet enough for Tier 2 runs")
     preflight.add_argument("--json", action="store_true")

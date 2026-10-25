@@ -23,7 +23,7 @@ python3 -m unittest discover -s tools/tests -v
 python3 tools/check_repository.py                # repository hygiene and scope gate
 ./benchctl validate experiments/quick.yaml       # also standard.yaml, gc-focused.yaml, ledger-benchmark.yaml, tier2-workloads.yaml
 ./benchctl doctor && ./benchctl discover-runtimes && ./benchctl list-runtimes
-./benchctl fetch-jdks --feature 21               # verified OpenJDK HotSpot builds into .benchctl/jdks
+./benchctl fetch-jdks --feature 8 --feature 11 --feature 17 --feature 21 --feature 25   # Ubuntu archive, signature-checked, into .benchctl/jdks
 ./benchctl preflight                             # quiet-machine checks; a Tier 2 run is invalid if these fail
 ./benchctl plan experiments/tier2-workloads.yaml
 ./benchctl run experiments/tier2-workloads.yaml  # real Tier 2 runs; needs a quiet machine to mean anything
