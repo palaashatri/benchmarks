@@ -42,6 +42,8 @@ final class Report {
         {"process_tree_rss_mb_max", "Process tree: peak RSS", "MiB"},
         {"process_tree_cpu_pct_one_core_mean", "Process tree: CPU (one-core mean)", "%"},
         {"process_tree_gc_pause_p99_ms", "Process tree: GC pause p99 (all JVMs)", "ms"},
+        {"process_tree_native_memory_committed_mb", "Process tree: committed native memory (all JVMs)", "MiB"},
+        {"process_tree_jfr_allocation_sample_rate_mb_s", "Process tree: allocation sample rate (all JVMs)", "MiB/s"},
     };
 
     private static final String CSS = """

@@ -7,6 +7,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Map;
 import java.util.UUID;
+import javax.management.ObjectName;
+import jdk.jfr.FlightRecorder;
+import jdk.jfr.Recording;
 
 /** Process identity and a port publication made only after the listener starts. */
 public final class RuntimeInfo {
@@ -43,9 +46,49 @@ public final class RuntimeInfo {
         Thread thread = new Thread(() -> {
             try { while (System.in.read() != -1) { } }
             catch (IOException closed) { }
+            captureChildTelemetry();
             System.exit(0);
         }, "parent-liveness");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    /**
+     * Writes this JVM's native memory summary and its {@code bench} flight recording into the directory the engine
+     * names with {@code -Dbench.child.telemetry}, just before the child exits. The child takes them itself because a
+     * child the gateway retires mid-run is gone before any snapshot from outside could reach it. A capture that fails
+     * leaves its file absent, and the engine reports the missing telemetry.
+     */
+    static void captureChildTelemetry() {
+        String directory = System.getProperty("bench.child.telemetry");
+        if (directory == null || directory.isBlank()) return;
+        long pid = ProcessHandle.current().pid();
+        Path target = Path.of(directory);
+        var problems = new StringBuilder();
+        try {
+            Files.createDirectories(target);
+            Object summary = ManagementFactory.getPlatformMBeanServer().invoke(
+                    new ObjectName("com.sun.management:type=DiagnosticCommand"), "vmNativeMemory",
+                    new Object[]{new String[]{"summary", "scale=KB"}}, new String[]{String[].class.getName()});
+            Files.writeString(target.resolve("nmt-" + pid + ".txt"), String.valueOf(summary));
+        } catch (Exception failure) {
+            problems.append("native memory: ").append(failure).append('\n');
+        }
+        try {
+            boolean found = false;
+            for (Recording recording : FlightRecorder.getFlightRecorder().getRecordings()) {
+                if ("bench".equals(recording.getName())) {
+                    recording.dump(target.resolve("jfr-" + pid + ".jfr"));
+                    found = true;
+                }
+            }
+            if (!found) problems.append("no recording named bench\n");
+        } catch (Exception failure) {
+            problems.append("flight recording: ").append(failure).append('\n');
+        }
+        if (problems.length() > 0) {
+            try { Files.writeString(target.resolve("error-" + pid + ".txt"), problems.toString()); }
+            catch (IOException ignored) { }
+        }
     }
 }

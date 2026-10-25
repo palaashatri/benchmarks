@@ -288,9 +288,13 @@ public final class Tier2 {
             } catch (IOException exception) {
                 throw new BenchError("cannot create " + childLogs + ": " + exception.getMessage(), exception);
             }
-            // Children inherit these options from the gateway, so each child writes its own GC log, named by pid.
+            // Children inherit these options from the gateway. Each writes its own GC log, named by pid, runs native
+            // memory tracking with a flight recording, and captures both into childLogs as it exits.
             environment.put("BENCH_CHILD_JVM_OPTIONS", Json.write(Map.of("options", List.of(
-                    "-Xlog:gc*:file=" + childLogs.resolve("gc-%p.log") + ":time,uptime,level,tags"))));
+                    "-Xlog:gc*:file=" + childLogs.resolve("gc-%p.log") + ":time,uptime,level,tags",
+                    "-XX:NativeMemoryTracking=summary",
+                    "-XX:StartFlightRecording=name=bench,settings=profile,disk=true,maxsize=512m",
+                    "-Dbench.child.telemetry=" + childLogs))));
         }
         Path gcLog = directory.resolve("gc.log");
         Path recording = directory.resolve("recording.jfr");
@@ -367,6 +371,19 @@ public final class Tier2 {
 
         Path jfrJson = directory.resolve("jfr-events.json");
         Map<String, Object> jfrConversion = convertRecording(jfrTool, recording, jfrJson);
+        // Each child wrote its own capture as it exited, so the children are read once the tree has stopped.
+        Map<String, Object> childTelemetry = new LinkedHashMap<>();
+        if (treeSummary != null) {
+            for (long pid : pidsOf(treeSummary.get("observed_child_pids"))) {
+                String id = Long.toString(pid);
+                Path childJson = childLogs.resolve("jfr-" + id + ".json");
+                childTelemetry.put(id, Json.map(
+                        "nmt", Telemetry.parseNmt(read(childLogs.resolve("nmt-" + id + ".txt"))),
+                        "capture_error", blankToNull(read(childLogs.resolve("error-" + id + ".txt"))),
+                        "jfr_conversion", convertRecording(jfrTool, childLogs.resolve("jfr-" + id + ".jfr"), childJson),
+                        "jfr", Telemetry.parseJfr(childJson)));
+            }
+        }
         String gcText = read(gcLog);
         Map<String, Object> childGc = new LinkedHashMap<>();
         List<Long> gcLogPids = new ArrayList<>();
@@ -401,6 +418,7 @@ public final class Tier2 {
             processTree.put("gc", Telemetry.parseGcPauses(pooledGc.toString()));
             processTree.put("child_gc", childGc);
             processTree.put("gc_log_pids", gcLogPids);
+            processTree.put("child_telemetry", childTelemetry);
             telemetry.put("process_tree", processTree);
         }
         writeJson(directory.resolve("telemetry.json"), telemetry);
@@ -646,18 +664,20 @@ public final class Tier2 {
         return value instanceof Number number && number.longValue() == 0;
     }
 
-    /** Stops the measured JVM: a graceful request first, then a forced stop if it does not exit in time. */
+    /**
+     * Stops the measured gateway and, through it, its children. Only the gateway is signalled: its shutdown hooks close
+     * each child through the child's stdin, and every child writes its own capture before it exits. Signalling the
+     * children directly would end them first, before any capture.
+     */
     static void terminate(Process process) {
         if (!process.isAlive()) {
             return;
         }
-        process.descendants().forEach(ProcessHandle::destroy);
         process.destroy();
         try {
-            if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
+            if (!process.waitFor(30, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
-                process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS);
+                process.waitFor(10, TimeUnit.SECONDS);
             }
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -818,28 +838,36 @@ public final class Tier2 {
             }
         }
         for (Map<String, Object> repetition : repetitions) {
-            // Process-tree repetitions only: the children the gateway reports must be the ones the sampler saw, and
-            // every child the sampler saw must have written its own GC log.
+            // Process-tree repetitions only. The children the gateway reports must be the ones the sampler saw, and every
+            // child the sampler saw needs its GC log, native memory and a converted flight recording. Each child writes
+            // the last two as it exits, so a child the gateway retired mid-run is held to the same standard.
             Map<String, Object> tree = Json.asMap(at(repetition, "telemetry", "process_tree"));
             if (tree.isEmpty()) {
                 continue;
             }
             List<Long> observed = pidsOf(tree.get("observed_child_pids"));
             List<Long> logged = pidsOf(tree.get("gc_log_pids"));
+            List<Long> reported = pidsOf(repetition.get("child_processes_reported"));
             if (observed.isEmpty()) {
                 reasons.add("no child JVM process was observed for a process-tree workload");
             }
-            for (long pid : pidsOf(repetition.get("child_processes_reported"))) {
+            for (long pid : reported) {
                 if (!observed.contains(pid)) {
                     reasons.add("gateway-reported child pid " + pid + " was not observed by the process sampler");
                 }
             }
             for (long pid : observed) {
+                String id = Long.toString(pid);
                 if (!logged.contains(pid)) {
                     reasons.add("child JVM pid " + pid + " has no GC log");
                 }
+                if (at(tree, "child_telemetry", id, "nmt", "committed_bytes") == null) {
+                    reasons.add("child JVM pid " + pid + " has no native-memory summary");
+                }
+                if (!isZero(at(tree, "child_telemetry", id, "jfr_conversion", "returncode"))) {
+                    reasons.add("child JVM pid " + pid + " has no usable flight recording");
+                }
             }
-            warnings.add("child JVM NMT and JFR are not collected; process-tree telemetry covers CPU, RSS and GC pauses");
         }
         if (repetitions.stream().anyMatch(item -> at(item, "telemetry", "jfr", "allocation_sample_weight_bytes") == null)) {
             warnings.add("JFR allocation samples were unavailable; allocation-rate KPI remains null");
@@ -931,6 +959,20 @@ public final class Tier2 {
                 values(repetitions, List.of("telemetry", "process_tree", "gc", "p99_ms")), seed + 14));
         aggregate.put("process_tree_process_count_max", metric(
                 values(repetitions, List.of("telemetry", "process_tree", "process_count_max")), seed + 15));
+        List<Double> treeNativeMemory = new ArrayList<>();
+        List<Double> treeAllocationRates = new ArrayList<>();
+        for (Map<String, Object> repetition : repetitions) {
+            Double committed = treeNativeMemoryBytes(repetition);
+            if (committed != null) {
+                treeNativeMemory.add(committed / 1024 / 1024);
+            }
+            Double rate = treeAllocationRate(repetition);
+            if (rate != null) {
+                treeAllocationRates.add(rate);
+            }
+        }
+        aggregate.put("process_tree_native_memory_committed_mb", metric(treeNativeMemory, seed + 16));
+        aggregate.put("process_tree_jfr_allocation_sample_rate_mb_s", metric(treeAllocationRates, seed + 17));
         List<Double> allocationRates = new ArrayList<>();
         for (Map<String, Object> repetition : repetitions) {
             Object weight = at(repetition, "telemetry", "jfr", "allocation_sample_weight_bytes");
@@ -1027,6 +1069,47 @@ public final class Tier2 {
 
     private static final Pattern CHILD_GC_LOG = Pattern.compile("gc-(\\d+)\\.log");
 
+    /** Committed native memory summed over the gateway and every observed child, or null unless every JVM reported it. */
+    static Double treeNativeMemoryBytes(Map<String, Object> repetition) {
+        if (!(at(repetition, "telemetry", "process_tree") instanceof Map<?, ?>)) {
+            return null;
+        }
+        if (!(at(repetition, "telemetry", "nmt", "committed_bytes") instanceof Number gateway)) {
+            return null;
+        }
+        double total = gateway.doubleValue();
+        for (long pid : pidsOf(at(repetition, "telemetry", "process_tree", "observed_child_pids"))) {
+            if (!(at(repetition, "telemetry", "process_tree", "child_telemetry", Long.toString(pid), "nmt", "committed_bytes")
+                    instanceof Number child)) {
+                return null;
+            }
+            total += child.doubleValue();
+        }
+        return total;
+    }
+
+    /** Allocation-sample weight per measured second, summed over every JVM in the tree, or null unless every JVM has one. */
+    static Double treeAllocationRate(Map<String, Object> repetition) {
+        if (!(at(repetition, "telemetry", "process_tree") instanceof Map<?, ?>)) {
+            return null;
+        }
+        if (!(at(repetition, "load", "phases", "measure_s") instanceof Number seconds) || seconds.doubleValue() <= 0) {
+            return null;
+        }
+        if (!(at(repetition, "telemetry", "jfr", "allocation_sample_weight_bytes") instanceof Number gateway)) {
+            return null;
+        }
+        double weight = gateway.doubleValue();
+        for (long pid : pidsOf(at(repetition, "telemetry", "process_tree", "observed_child_pids"))) {
+            if (!(at(repetition, "telemetry", "process_tree", "child_telemetry", Long.toString(pid), "jfr",
+                    "allocation_sample_weight_bytes") instanceof Number child)) {
+                return null;
+            }
+            weight += child.doubleValue();
+        }
+        return weight / seconds.doubleValue() / 1024 / 1024;
+    }
+
     /** The gateway's own list of live child processes, read from its /runtime identity. */
     static List<Map<String, Object>> childProcessesOf(int port) {
         try {
@@ -1053,7 +1136,10 @@ public final class Tier2 {
         return pids;
     }
 
-    /** Children exit when the gateway stops. Waiting for them means their GC logs are complete before they are read. */
+    /**
+     * Children exit when the gateway stops, after writing their captures, so their files are complete once this returns.
+     * A child still running after the wait is stopped; the gates then report its missing telemetry.
+     */
     static void awaitExit(List<Long> pids) {
         for (long pid : pids) {
             Optional<ProcessHandle> handle = ProcessHandle.of(pid);
@@ -1066,7 +1152,7 @@ public final class Tier2 {
                 Thread.currentThread().interrupt();
                 return;
             } catch (ExecutionException | TimeoutException ignored) {
-                // A child that outlives the wait is reported by the GC-log gate, not here.
+                handle.get().destroyForcibly();
             }
         }
     }
@@ -1140,6 +1226,10 @@ public final class Tier2 {
         } catch (IOException exception) {
             return "";
         }
+    }
+
+    private static String blankToNull(String text) {
+        return text == null || text.isBlank() ? null : text;
     }
 
     private static String readRequired(Path path) {

@@ -7,7 +7,7 @@ Last audited: 2026-10-25.
 **Overall classification: eleven workloads run through the Tier 2 engine (00, 01, 02, 03, 04, 05, 09, 10, 11, 12, 13). Workloads 06, 07 and 08 run through the controller's lanes (chat, startup, jobs), which apply the same gates. No measurement-valid results exist yet; every number on this host is a calibration run on an uncontrolled sandbox.**
 
 - Tier 2 workloads: **11**. Each declares its contract in `benchmarks/<id>/tier2.json`.
-- Process-tree telemetry: `02`, `10` and `11` declare `telemetry_scope: process-tree`. Their telemetry covers the gateway and every child JVM it starts: CPU and resident memory per process, a pooled GC pause distribution across every JVM, and a cross-check that each child the gateway reports is one the sampler observed and has its own GC log. Per-child NMT and JFR are not collected, and the envelope says so as a warning.
+- Process-tree telemetry: `02`, `10` and `11` declare `telemetry_scope: process-tree`. Their telemetry covers the gateway and every child JVM it starts: CPU and resident memory per process, a pooled GC pause distribution across every JVM, a cross-check that each child the gateway reports is one the sampler observed and has its own GC log, and per-child native memory and a converted flight recording. Each child writes those as it exits, after the gateway's shutdown closes its stdin, so a child retired mid-run is captured too. The tree's committed native memory and allocation rate are sums that are null unless every JVM reported.
 - Lanes: `06` (chat), `07` (startup) and `08` (jobs) are Tier 1 in the catalogue. They run five repetitions, sample the host before and after, apply the same shared gates as the Tier 2 engine, and add their own correctness and spread gates. Their envelopes stay invalid by policy: benchmark results are permitted only for Tier 2 or Tier 3 workloads.
 - Platform: the controller and every workload are Java 17+ / Maven. The repository has no Python. The only scripts are the launchers (`benchctl`, `benchctl.cmd`) and the Maven wrappers (`mvnw`, `mvnw.cmd`), which contain no logic. Linux is verified locally. Windows and macOS are checked by CI only, and that run is the verification.
 - Measurement-valid published result sets: **0**.
@@ -31,7 +31,7 @@ The old committed results were removed because they mixed smoke traffic with har
 |---|---|---:|---|
 | 00 | Runtime compatibility | 2 | Deterministic Java 8-bytecode sort/compress/hash workload; the controller builds one JAR and records/reuses its SHA-256 digest across runtimes. Maven tests run on JDK 8, 21 and 25. |
 | 01 | Fintech ledger | 2 | Real H2/Hikari transactions, isolated process identity, balance-conservation checks, application-process JFR/GC/NMT/CPU/RSS telemetry, open-loop HdrHistogram load, warm-up and statistical gates. Reference Tier 2 workload. |
-| 02 | Microservices mesh | 2 | Gateway plus three independent service JVMs; actual account/transaction/notification HTTP calls and child identity/readiness/cleanup checks. Process-tree telemetry covers the gateway and its three children. Child NMT and JFR are not collected. |
+| 02 | Microservices mesh | 2 | Gateway plus three independent service JVMs; actual account/transaction/notification HTTP calls and child identity/readiness/cleanup checks. Process-tree telemetry covers the gateway and its three children, including each child's native memory and flight recording. |
 | 03 | Streaming analytics | 2 | In-memory queue/window processor; no real broker or state backend. |
 | 04 | Vector/FFM inference | 2 | JDK 21 preview Vector API and FFM paths with scalar/SIMD equivalence checks. Runs only on JDK 21 (catalog band 21–21). |
 | 05 | Dynamic/polyglot service | 2 | Rhino execution prototype; not a cross-runtime OpenJDK feature lane. |
@@ -89,14 +89,13 @@ The old committed results were removed because they mixed smoke traffic with har
 
 ## Remaining work
 
-Items 1, 2 and 4 need controlled hardware or a live environment. Items 3, 5 and 6 are open and listed with what each needs.
+Items 1, 2 and 4 need controlled hardware or a live environment. Items 3 and 5 are open and listed with what each needs.
 
 1. **Run the benchmark matrix on a controlled host.** Run `./benchctl preflight` until it passes, then `./benchctl run experiments/tier2-matrix.yaml`. Expect the first runs to be invalid until the host passes every gate. Check the results with `./benchctl report`.
 2. **Calibrate the provisional thresholds on that host.** These are the latency stability threshold, the lane spread threshold and the warm-up window length, all set without hardware data.
 3. **Live Adoptium verification.** `fetch-jdks` is written against the Adoptium API and its checksums. It needs one live run on each of Linux, Windows and macOS before it is trusted there. Checksums come from the API, which is not a signature; signature verification would be a further step.
 4. **Tier 3 publication** of controlled-environment results, once they pass every gate. Until then, no publication claims. Promoting `06`, `07` or `08` to Tier 2 is a separate decision that also needs their own per-process gates and a hardware run.
-5. **Per-child NMT and JFR for 02, 10 and 11.** Process-tree telemetry covers CPU, resident memory and GC pauses for every JVM. Native memory and flight recording still cover only the gateway.
-6. **Windows and macOS are verified by CI only.** The Java controller and the Maven builds are written for all three, but this sandbox only runs Linux. The first CI run on the pull request is the verification; any failure there is open work.
+5. **Windows and macOS are verified by CI only.** The Java controller and the Maven builds are written for all three, but this sandbox only runs Linux. The first CI run on the pull request is the verification; any failure there is open work.
 
 ## Known issues
 
@@ -110,4 +109,3 @@ Items 1, 2 and 4 need controlled hardware or a live environment. Items 3, 5 and 
 1. **First published, measurement-valid result set** for `01-fintech-ledger` on a quiet machine (pinned CPU frequency, no other load), with the environment fingerprint, raw data, the preflight record and `benchctl compare` output, under a dated `published/` directory.
 2. **Measurement results for 09 and 12** on the same host, once their calibration thresholds are set.
 3. **Charts per JDK × GC** once the matrix has data: the report already draws the charts; the matrix view needs the data.
-4. **Per-child NMT and JFR** for 02, 10 and 11, so their numbers describe every JVM in full.
