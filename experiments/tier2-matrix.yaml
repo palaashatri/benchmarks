@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "run_kind": "benchmark",
+  "workloads": [
+    "00-runtime-compatibility",
+    "01-fintech-ledger",
+    "02-microservices-mesh",
+    "03-streaming-analytics",
+    "04-ml-inference-panama-vector",
+    "05-polyglot-service",
+    "09-onnx-inference",
+    "10-microservices-fleet",
+    "11-autoscaling-burst",
+    "12-hft-trading-gateway",
+    "13-large-monolith"
+  ],
+  "runtimes": [21],
+  "gcs": ["g1"],
+  "repetitions": 5,
+  "requests": 100,
+  "threads": 16,
+  "target_rate": 80,
+  "warmup_seconds": 8,
+  "measure_seconds": 12,
+  "heap_mb": 512
+}
