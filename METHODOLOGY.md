@@ -36,7 +36,7 @@ Implemented detector (`Tier2.java`, `Stats.java`): delivered throughput is stabl
 
 ## Telemetry ownership
 
-Telemetry must describe the measured application process. Metrics from the load-generator JVM must never be reported as application JVM metrics. GC pause percentiles must come from event data such as JFR or GC logs; cumulative `GarbageCollectorMXBean` time is not a pause percentile.
+Telemetry must describe the measured application process. Metrics from the load-generator JVM must never be reported as application JVM metrics. GC pause percentiles must come from event data such as JFR or GC logs; cumulative `GarbageCollectorMXBean` time is not a pause percentile. For a workload that starts child JVMs (`telemetry_scope: process-tree`), the application is the whole process tree: the gateway and every descendant. Each JVM in the tree is sampled, each writes its own GC log, and the tree totals are sums and pooled pause distributions across those JVMs. A child that the gateway reports but the sampler never observed is a validity failure, and so is an observed child without a GC log. Load-generator telemetry stays out of every total.
 
 ## Repetitions and statistics
 
@@ -49,6 +49,12 @@ Implemented: a single repetition has no standard deviation, coefficient of varia
 Every Tier 2+ result must include runtime identity, executable identity, JVM flags, collector identity, OS/kernel, CPU topology, memory, cgroups/container limits, CPU governor, SMT/NUMA state where observable, workload artifact hashes and repository state.
 
 Quiet-machine preflight (`benchctl preflight`, run before and after each measurement). It fails when any of these hold: the CPU governor is not `performance` on every CPU, or it cannot be observed; a JVM option variable (`JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`) is set, since it changes the measured JVM outside its recorded flags; the 1-minute load exceeds half the logical CPUs. Warnings cover THP mode, SMT state, cgroup CPU quotas and swap. An unknown value fails its check; it never passes. A failed preflight makes the run invalid, and the envelope records the failing checks.
+
+## Lanes
+
+The startup, jobs and chat lanes (06, 07, 08) run five repetitions, sample the host before and after the lane, and apply the same gates as the Tier 2 engine: run kind, host preflight, repetition count and failures, and critical host state identical across repetitions (`Tier2.sharedReasons`). Each lane adds its own correctness gates and a spread gate: the coefficient of variation of its primary metric across repetitions must not exceed 10 % (`Tier2.spreadReason`, provisional). A failed repetition contributes no value to a statistic, and it is never zeroed.
+
+The jobs lane is open loop. Jobs are due at fixed instants; a job that starts late still counts its full wait from the instant it was due. A schedule that falls behind in any repetition is a lane reason. Benchmark results are refused for workloads whose catalogue tier is below 2, so a lane never produces a measurement-valid envelope while its workload is Tier 1.
 
 ## Comparison validity
 

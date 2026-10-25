@@ -7,7 +7,7 @@ Detailed per-workload state: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.
 ## Current state (2026-10-25)
 
 - `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range. Tier 2 (measurement-ready in code): `00`–`05`, `09`–`13`. Tier 1: `06`, `07`, `08`.
-- `02`, `10` and `11` are Tier 2 but measure only the gateway process. Truth rule 6 applies to their service JVMs; closing that gap is open work (see `IMPLEMENTATION_STATUS.md`).
+- `02`, `10` and `11` are Tier 2 with process-tree telemetry: the gateway and every child JVM it starts are sampled and logged, and each reported child must be observed. Native memory and flight recording still cover only the gateway (see `IMPLEMENTATION_STATUS.md`).
 - There are **no** measurement-valid published results. Do not add any until a run on controlled hardware passes every validity gate.
 
 ## Scope boundary
@@ -28,6 +28,7 @@ Controller (Java 17 or newer; the Maven wrapper is the only other tool):
 ./benchctl plan experiments/tier2-matrix.yaml    # the 11-workload Tier 2 matrix, platform-neutral
 ./benchctl run experiments/tier2-matrix.yaml     # real Tier 2 runs; needs a quiet machine to mean anything
 ./benchctl report results/<run-id>               # readable HTML report
+./benchctl lane startup|jobs|chat ...            # the 07, 08 and 06 lanes, with five repetitions and the shared gates
 ./mvnw -B -f tools/benchctl/pom.xml test         # controller unit tests
 ```
 
