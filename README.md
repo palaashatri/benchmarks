@@ -103,10 +103,9 @@ Unknown measurements are `null`, never fake zeroes. `benchctl compare` rejects i
 
 Workload `mvnw test` commands are listed under Quick start. CI runs the controller, shared modules and every workload on Ubuntu, Windows and macOS.
 
-## Future SLOPOS/PARAMA integration and Pi Zero 2 W efficiency
+## Standalone benchmark tooling and Raspberry Pi efficiency
 
-**Planned only.** benchmarks is an original project proposed for SLOPOS's **optional first-party developer test tool, never an always-running system service**. Linux/SLOPOS integration must be validated against actual application workflows and dependencies. PARAMA is a future native port requiring its own kernel/runtime/graphics/filesystem/tooling proofs; this README does not claim executable compatibility.
+**Benchmarks is excluded from SLOPOS/PARAMA bundled desktop applications and the curated first-party Software catalog**, including optional developer-app entries. It remains an independent command-line/controller and test-workload project; no desktop launcher, OS-specific UI or PARAMA port is planned by this requirement. It can run on any platform independently meeting its documented Java/runtime requirements.
 
-For the Raspberry Pi Zero 2 W (512 MB, quad Cortex-A53), prioritize: Minimize observer effect: low-rate/streamed metrics collection, bounded raw logs/results, fixed synthetic datasets, per-run memory/CPU budgets and explicit warm-up/cool-down. Add **edge-small** profiles that fit measured free RAM, isolate measurement processes and record thermal throttling/CPU frequency/microSD latency; never interpret Pi numbers as comparable to x86 host runs without normalization. Avoid background probes at idle.
+A future Raspberry Pi Zero 2 W **edge-small** measurement profile should reduce harness overhead, bound logs and memory, report thermal throttling and JVM/GC support accurately, and preserve a reproducible result. These are **not current verified Pi capabilities**. See [AGENTS.md](AGENTS.md#independent-benchmark-tooling-and-low-memory-efficiency).
 
-The low-memory profile must be demonstrated on real hardware with process/runtime and system-wide memory accounting, accurate output, cancellations and truthful unavailable states. **No Pi Zero 2 W or PARAMA support has been verified.** Detailed requirements: [AGENTS.md](AGENTS.md#future-sloposparama-targets-and-edge-efficiency-requirements).
