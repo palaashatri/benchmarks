@@ -27,6 +27,7 @@ from typing import Any, Iterable
 
 import benchctl_report
 import host_environment
+import jdk_fetch
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / ".benchctl"
@@ -268,6 +269,7 @@ def candidate_java_executables() -> list[Path]:
         "/Library/Java/JavaVirtualMachines/*/Contents/Home",
         str(Path.home() / ".sdkman/candidates/java/*"),
         str(Path.home() / ".jabba/jdk/*"),
+        str(STATE_DIR / "jdks" / "*"),
     )
     for pattern in patterns:
         for home in glob.glob(pattern):
@@ -774,6 +776,19 @@ def cmd_list_workloads(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fetch_jdks(args: argparse.Namespace) -> int:
+    """Install verified OpenJDK builds under .benchctl/jdks, where discovery finds them."""
+    api_base = os.environ.get("BENCH_FOOJAY_API", jdk_fetch.DEFAULT_API)
+    failures = 0
+    for feature in args.feature:
+        try:
+            print(jdk_fetch.install_jdk(feature, args.distribution, STATE_DIR / "jdks", api_base))
+        except jdk_fetch.FetchError as exception:
+            failures += 1
+            print(f"ERROR JDK {feature}: {exception}", file=sys.stderr)
+    return 0 if not failures else 2
+
+
 def cmd_preflight(args: argparse.Namespace) -> int:
     report = host_environment.preflight(environment_fingerprint())
     if args.json:
@@ -895,6 +910,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="benchctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("doctor").set_defaults(func=cmd_doctor)
+    fetch = subparsers.add_parser("fetch-jdks", help="install verified OpenJDK HotSpot builds for a JDK matrix")
+    fetch.add_argument("--feature", type=int, action="append", required=True, help="feature release, e.g. 21")
+    fetch.add_argument("--distribution", default=jdk_fetch.ALLOWED_DISTRIBUTIONS[0], choices=jdk_fetch.ALLOWED_DISTRIBUTIONS)
+    fetch.set_defaults(func=cmd_fetch_jdks)
     preflight = subparsers.add_parser("preflight", help="check the host is quiet enough for Tier 2 runs")
     preflight.add_argument("--json", action="store_true")
     preflight.set_defaults(func=cmd_preflight)
