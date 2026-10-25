@@ -103,7 +103,7 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP and persistent framed TCP; functional Tier 1 prototype"
+      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP, persistent framed TCP and a real grpc-java listener (verified by mvn test); functional Tier 1 prototype"
     },
     {
       "id": "13-large-monolith",

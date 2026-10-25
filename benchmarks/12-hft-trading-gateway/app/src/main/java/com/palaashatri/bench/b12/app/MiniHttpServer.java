@@ -9,14 +9,18 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.PriorityQueue;
+import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Synthetic symbol-isolated matching over HTTP and persistent framed TCP; no real venue or gRPC. */
-public final class MiniHttpServer implements AutoCloseable {
+public final class MiniHttpServer implements AutoCloseable, GrpcEndpointProvider.Operations {
     enum Side { BUY, SELL }
     enum Status { OPEN, PARTIALLY_FILLED, FILLED, CANCELLED }
 
@@ -177,9 +181,11 @@ public final class MiniHttpServer implements AutoCloseable {
     private final AtomicLong requests = new AtomicLong();
     private final AtomicLong submitted = new AtomicLong();
     private final AtomicLong submitDurationNs = new AtomicLong();
+    private final AtomicLong grpcRequests = new AtomicLong();
     private final java.util.concurrent.ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private HttpServer server;
     private FramedTcpServer tcp;
+    private GrpcEndpointProvider.Endpoint grpc;
 
     public MiniHttpServer(String benchmark, String ignoredTitle) { this.benchmark = benchmark; }
     public void start(int port) throws IOException {
@@ -197,8 +203,8 @@ public final class MiniHttpServer implements AutoCloseable {
                 };
                 return Json.parseObject(body);
             });
-            server.createContext("/health", Routes.guard(e -> Json.reply(e, 200, Map.of("status", "UP",
-                    "transport", "http-and-framed-tcp", "grpc_active", false, "tcp_port", tcp.port()))));
+            grpc = startGrpc();
+            server.createContext("/health", Routes.guard(e -> Json.reply(e, 200, health())));
             server.createContext("/runtime", Routes.guard(e -> Json.bytes(e, 200, "application/json", RuntimeInfo.json())));
             server.createContext("/metrics", Routes.guard(this::metrics));
             server.createContext("/orders", Routes.guard(this::orders));
@@ -213,15 +219,48 @@ public final class MiniHttpServer implements AutoCloseable {
                 if (Routes.method(e, "GET")) Json.bytes(e, 200, "application/json", orderBook.status(e.getRequestURI().getPath().substring("/grpc/GetOrderStatus/".length())));
             }));
             server.setExecutor(executor); server.start(); RuntimeInfo.publishPort(server.getAddress().getPort());
-            System.out.println(Json.stringify(Map.of("event", "started", "benchmark", benchmark, "port", server.getAddress().getPort(), "tcp_port", tcp.port())));
+            System.out.println(Json.stringify(Map.of("event", "started", "benchmark", benchmark, "port", server.getAddress().getPort(), "tcp_port", tcp.port(), "grpc_active", grpc != null)));
         } catch (IOException | RuntimeException failure) { close(); throw failure; }
     }
+    /** The HTTP port, valid after {@link #start(int)}. */
+    public int port() { return server.getAddress().getPort(); }
+    /** The gRPC port, present only when the Maven gRPC lane supplied a provider. */
+    public OptionalInt grpcPort() { return grpc == null ? OptionalInt.empty() : OptionalInt.of(grpc.port()); }
+    private GrpcEndpointProvider.Endpoint startGrpc() throws IOException {
+        Optional<GrpcEndpointProvider> provider = ServiceLoader.load(GrpcEndpointProvider.class).findFirst();
+        return provider.isPresent() ? provider.get().start(this) : null;
+    }
+    private Map<String, Object> health() {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", "UP");
+        body.put("transport", grpc == null ? "http-and-framed-tcp" : "http-framed-tcp-and-grpc");
+        body.put("grpc_active", grpc != null);
+        body.put("tcp_port", tcp.port());
+        if (grpc != null) body.put("grpc_port", grpc.port());
+        return body;
+    }
     private String submit(Map<String, Object> body) {
-        long started = System.nanoTime();
-        String result = orderBook.submit(Json.string(body, "symbol", ""), Json.string(body, "side", ""),
+        return submitOrder(Json.string(body, "symbol", ""), Json.string(body, "side", ""),
                 Json.number(body, "quantity", -1), Json.number(body, "price_nanos", -1));
+    }
+    private String submitOrder(String symbol, String side, long quantity, long priceNanos) {
+        long started = System.nanoTime();
+        String result = orderBook.submit(symbol, side, quantity, priceNanos);
         submitted.incrementAndGet(); submitDurationNs.addAndGet(System.nanoTime() - started);
         return result;
+    }
+    // Operations used only by the gRPC listener; counted separately from HTTP and TCP traffic.
+    @Override public String submit(String symbol, String side, long quantity, long priceNanos) {
+        grpcRequests.incrementAndGet();
+        return submitOrder(symbol, side, quantity, priceNanos);
+    }
+    @Override public String cancel(String orderId) {
+        grpcRequests.incrementAndGet();
+        return orderBook.cancel(orderId);
+    }
+    @Override public String status(String orderId) {
+        grpcRequests.incrementAndGet();
+        return orderBook.status(orderId);
     }
     private void orders(HttpExchange exchange) throws IOException {
         requests.incrementAndGet();
@@ -242,7 +281,9 @@ public final class MiniHttpServer implements AutoCloseable {
                 + "gateway_filled_quantity_total " + orderBook.filledQuantity.get() + "\n"
                 + "gateway_submit_duration_seconds_sum " + (submitDurationNs.get() / 1_000_000_000.0) + "\n"
                 + "gateway_rejected_total " + orderBook.rejected.get() + "\n"
-                + "gateway_grpc_active 0\n" + "gateway_tcp_connections " + tcp.connections() + "\n"
+                + "gateway_grpc_active " + (grpc == null ? 0 : 1) + "\n"
+                + "gateway_grpc_requests_total " + grpcRequests.get() + "\n"
+                + "gateway_tcp_connections " + tcp.connections() + "\n"
                 + "benchmark_requests_total{benchmark=\"" + benchmark + "\"} " + requests.get() + "\n");
     }
     private static String escape(String value) {
@@ -252,6 +293,7 @@ public final class MiniHttpServer implements AutoCloseable {
     @Override public synchronized void close() {
         if (server != null) server.stop(0);
         if (tcp != null) tcp.close();
+        if (grpc != null) grpc.close();
         executor.shutdownNow();
     }
 }

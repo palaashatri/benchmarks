@@ -30,7 +30,7 @@ The old committed results were removed because they mixed smoke traffic with har
 | 09 | ONNX inference | 0 | Truthful deterministic Java fallback; never reports ONNX active without a real session. |
 | 10 | Microservices fleet | 1 | Five independent replica JVMs; readiness-gated replacement, generation/PID identity and concurrent-deploy checks. |
 | 11 | Autoscaling burst | 1 | Bounded gateway admission and queued work across one to four worker JVMs; automatic backlog scale-up, idle scale-down and failure accounting. |
-| 12 | HFT gateway | 1 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP and persistent framed TCP; gRPC remains inactive. |
+| 12 | HFT gateway | 1 | Synthetic symbol-isolated FIFO/partial-fill engine shared by HTTP, persistent framed TCP and a real grpc-java listener; gRPC is verified by the Maven gate (`mvn test`), not by measurement runs. |
 | 13 | Large monolith | 0 | Creates 500 distinct generated proxy classes and labels JIT compilation time correctly; still not an enterprise monolith. |
 
 ## Foundation delivered
@@ -55,7 +55,7 @@ The old committed results were removed because they mixed smoke traffic with har
 
 1. Produce measurement-valid ledger result sets on controlled hardware (current CI is not a quiet machine).
 2. Port the shared measurement engine from benchmark 01 to other workloads only after their claimed architecture exists.
-3. Implement real gRPC for HFT and real ONNX sessions; add workload-specific correctness and shared measurement integration before Tier 2 promotion.
+3. Implement real ONNX sessions for 09; add workload-specific correctness and shared measurement integration before Tier 2 promotion. (Real gRPC for 12 is done.)
 4. Keep publication claims out of documentation until a Tier 3 controlled-environment run exists.
 
 ## Known issues (2026-10-20)
@@ -73,4 +73,4 @@ What would make the suite useful to someone deciding between JDKs or collectors,
 3. **One-command matrix runs:** `benchctl` fetching the JDK builds a plan needs (for example via the Foojay Disco API), so a user doesn't install eight JDKs by hand.
 4. **A second Tier 2 workload.** `02-microservices-mesh` now runs real separate JVMs and is the closest candidate; port the benchmark 01 measurement engine to it.
 5. **One build system with a wrapper** for every workload, and SHA-256 checks for every downloaded artifact.
-6. **Real gRPC for 12-hft-trading-gateway and real ONNX Runtime sessions for 09-onnx-inference**, then promote them.
+6. **Real ONNX Runtime sessions for 09-onnx-inference**, then promote it. Real gRPC for 12-hft-trading-gateway is in place (Maven lane).
