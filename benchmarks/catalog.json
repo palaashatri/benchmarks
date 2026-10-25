@@ -52,7 +52,7 @@
     {
       "id": "06-massive-chat-loom",
       "path": "benchmarks/06-massive-chat-loom",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
       "status": "persistent TCP chat with HTTP publish; measured by a dedicated open-loop chat driver with client-side delivery latency and conservation checks; no measurement-valid results yet"
@@ -60,7 +60,7 @@
     {
       "id": "07-coldstart-suite",
       "path": "benchmarks/07-coldstart-suite",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
       "status": "child-JVM process-to-health under default CDS, CDS off and AppCDS, measured by a startup lane that takes the application's own per-start times; no measurement-valid results yet"

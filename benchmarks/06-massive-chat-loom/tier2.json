@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.0.0",
+  "app_dir": "app",
+  "main_class": "com.palaashatri.bench.b06.app.BenchmarkApp",
+  "token_prefix": "chat",
+  "identity_path": "/runtime",
+  "load_shape": "framed-tcp",
+  "chat": {
+    "subscribers": 40,
+    "rooms": 4,
+    "publishers": 8
+  },
+  "driver": {
+    "directory": "harness",
+    "main_class": "com.palaashatri.bench.b06.harness.ChatLoad",
+    "build": [
+      "maven",
+      "-B",
+      "-q",
+      "package",
+      "-DskipTests",
+      "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+      "-Dmdep.outputFile=target/classpath.txt"
+    ],
+    "classpath_file": "target/classpath.txt",
+    "classpath_prefix": [
+      "target/classes"
+    ]
+  },
+  "correctness": [
+    "maven",
+    "-B",
+    "-q",
+    "test"
+  ],
+  "build": [
+    "maven",
+    "-B",
+    "-q",
+    "package",
+    "-DskipTests",
+    "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:build-classpath",
+    "-Dmdep.outputFile=target/classpath.txt"
+  ],
+  "classpath_file": "target/classpath.txt",
+  "classpath_prefix": [
+    "target/classes"
+  ]
+}

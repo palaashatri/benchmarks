@@ -43,7 +43,8 @@ public final class ChatLoad {
 
     /** Settings for one run, read from the command line. */
     record Config(String appClasspath, String appMain, int subscribers, int rooms, int publishers,
-                  double rate, double warmupSeconds, double measureSeconds, Path out) {
+                  double rate, double warmupSeconds, double measureSeconds, Path out,
+                  String attachBaseUrl, String runToken, long appPid) {
         static Config from(Map<String, String> options) {
             var config = new Config(
                     options.getOrDefault("app-classpath", "../app/build/run-sh/classes"),
@@ -52,9 +53,14 @@ public final class ChatLoad {
                     positive(options, "publishers", 8), Double.parseDouble(options.getOrDefault("rate", "500")),
                     Double.parseDouble(options.getOrDefault("warmup-seconds", "3")),
                     Double.parseDouble(options.getOrDefault("measure-seconds", "10")),
-                    Path.of(require(options, "out")));
+                    Path.of(require(options, "out")),
+                    options.get("attach-base-url"), options.get("run-token"),
+                    Long.parseLong(options.getOrDefault("app-pid", "-1")));
             if (config.rate <= 0 || config.warmupSeconds < 0 || config.measureSeconds <= 0) {
                 throw new IllegalArgumentException("rate must be positive and the windows must be valid");
+            }
+            if (config.attachBaseUrl != null && (config.runToken == null || config.appPid < 1)) {
+                throw new IllegalArgumentException("attaching to an application needs --run-token and --app-pid");
             }
             return config;
         }
@@ -142,13 +148,15 @@ public final class ChatLoad {
     private void run() throws Exception {
         Path work = Files.createTempDirectory("chat-load-");
         Path portFile = work.resolve("ready.port");
-        String token = "chat-load-" + System.nanoTime();
-        Process app = startApplication(work, portFile, token);
+        // Attached: the engine started the application and owns its telemetry; this driver only loads it.
+        boolean attached = config.attachBaseUrl != null;
+        String token = attached ? config.runToken : "chat-load-" + System.nanoTime();
+        Process app = attached ? null : startApplication(work, portFile, token);
         try {
-            int port = awaitPort(portFile, app);
-            String base = "http://127.0.0.1:" + port;
-            Map<String, Object> identity = awaitIdentity(base, app, token);
-            pid = app.pid();
+            String base = attached ? config.attachBaseUrl : "http://127.0.0.1:" + awaitPort(portFile, app);
+            long appPid = attached ? config.appPid : app.pid();
+            Map<String, Object> identity = awaitIdentity(base, appPid, token);
+            pid = appPid;
             int tcpPort = ((Number) Json.parseObject(get(base + "/health")).get("tcp_port")).intValue();
 
             for (int index = 0; index < config.subscribers; index++) {
@@ -163,11 +171,14 @@ public final class ChatLoad {
             long t0 = System.nanoTime() + Duration.ofMillis(500).toNanos();
             List<Thread> publishing = new ArrayList<>();
             long intervalNanos = Math.round(1e9 * config.publishers / config.rate);
-            long totalNanos = (long) ((config.warmupSeconds + config.measureSeconds) * 1e9);
-            long perPublisher = Math.max(1, totalNanos / intervalNanos);
+            // The schedule is exact: each publisher takes its share of the total, and the first total % publishers take one more.
+            long total = scheduledMessages();
+            int publisherIndex = 0;
             for (Connection connection : connections) {
                 if (connection.publisher) {
-                    publishing.add(Thread.ofVirtual().start(() -> publish(connection, t0, intervalNanos, perPublisher)));
+                    long count = total / config.publishers + (publisherIndex < total % config.publishers ? 1 : 0);
+                    publisherIndex++;
+                    publishing.add(Thread.ofVirtual().start(() -> publish(connection, t0, intervalNanos, count)));
                 }
             }
             for (Thread thread : publishing) {
@@ -181,9 +192,16 @@ public final class ChatLoad {
             writeEnvelope(identity, t0, sends, serverStats);
         } finally {
             connections.forEach(Connection::close);
-            stop(app);
+            if (app != null) {
+                stop(app);
+            }
             deleteQuietly(work);
         }
+    }
+
+    /** Every message the schedule asks for: the publish rate over the warm-up and measurement windows, rounded once. */
+    private long scheduledMessages() {
+        return Math.round(config.rate * (config.warmupSeconds + config.measureSeconds));
     }
 
     private void connect(int tcpPort, String room, String user, boolean publisher) throws IOException {
@@ -280,7 +298,9 @@ public final class ChatLoad {
         boolean conserved = acks == sends && framesReceived == queued;
 
         var results = new java.util.LinkedHashMap<String, Object>();
-        results.put("messages_scheduled", config.rate * (config.warmupSeconds + config.measureSeconds));
+        results.put("messages_scheduled", scheduledMessages());
+        results.put("messages_scheduled_in_window", Math.round(config.rate * config.measureSeconds));
+        results.put("series", perSecondSeries(t0));
         results.put("messages_sent", sends);
         results.put("messages_sent_in_window", sentInWindow);
         results.put("publish_rate_per_second", sentInWindow / config.measureSeconds);
@@ -343,6 +363,61 @@ public final class ChatLoad {
         telemetry.put("cpu_percent_mean", 100.0 * (last.cpuTicks() - first.cpuTicks()) / clockTicks() / seconds);
         telemetry.put("rss_mib_max", window.stream().mapToLong(Sample::rssKib).max().orElse(0) / 1024.0);
         return telemetry;
+    }
+
+    /** Per-second series from the run's own timestamps: scheduled and received counts, and p50 latency by intended second. */
+    private Map<String, Object> perSecondSeries(long t0) {
+        int buckets = (int) Math.ceil(config.warmupSeconds + config.measureSeconds);
+        long[] scheduled = new long[buckets];
+        long[] received = new long[buckets];
+        List<List<Double>> latency = new ArrayList<>();
+        for (int bucket = 0; bucket < buckets; bucket++) {
+            latency.add(new ArrayList<>());
+        }
+        for (Connection connection : connections) {
+            for (long[] send : connection.sends) {
+                int bucket = bucketOf(send[0], t0, buckets);
+                if (bucket >= 0) {
+                    scheduled[bucket]++;
+                }
+            }
+            for (long[] arrival : connection.arrivals) {
+                int done = bucketOf(arrival[1], t0, buckets);
+                if (done >= 0) {
+                    received[done]++;
+                }
+                int start = bucketOf(arrival[0], t0, buckets);
+                if (start >= 0) {
+                    latency.get(start).add((arrival[1] - arrival[0]) / 1e6);
+                }
+            }
+        }
+        List<Object> scheduledSeries = new ArrayList<>();
+        List<Object> receivedSeries = new ArrayList<>();
+        List<Object> p50Series = new ArrayList<>();
+        for (int bucket = 0; bucket < buckets; bucket++) {
+            scheduledSeries.add(scheduled[bucket]);
+            receivedSeries.add(received[bucket]);
+            p50Series.add(percentiles(latency.get(bucket)).get("p50"));
+        }
+        var series = new java.util.LinkedHashMap<String, Object>();
+        series.put("bucket_seconds", 1);
+        series.put("scheduled", scheduledSeries);
+        series.put("scheduled_bucketed_by", "intended_send_time");
+        series.put("completed", receivedSeries);
+        series.put("completed_bucketed_by", "receive_time");
+        series.put("p50_ms", p50Series);
+        series.put("p50_bucketed_by", "intended_send_time");
+        return series;
+    }
+
+    /** The second of the run a timestamp falls in, or -1 outside the run. */
+    private static int bucketOf(long nanos, long t0, int buckets) {
+        if (nanos < t0) {
+            return -1;
+        }
+        long second = (nanos - t0) / 1_000_000_000L;
+        return second < buckets ? (int) second : -1;
     }
 
     private static Map<String, Object> percentiles(List<Double> values) {
@@ -410,7 +485,7 @@ public final class ChatLoad {
         throw new IOException("application did not publish a port");
     }
 
-    private static Map<String, Object> awaitIdentity(String base, Process app, String token) throws Exception {
+    private static Map<String, Object> awaitIdentity(String base, long appPid, String token) throws Exception {
         long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
         while (System.nanoTime() < deadline) {
             Map<String, Object> identity;
@@ -422,7 +497,7 @@ public final class ChatLoad {
             }
             // Outside the retry: a wrong process must fail now, not be retried until timeout.
             if (identity.get("run_token") instanceof String value && value.equals(token)
-                    && identity.get("pid") instanceof Number pid && pid.longValue() == app.pid()) {
+                    && identity.get("pid") instanceof Number pid && pid.longValue() == appPid) {
                 return identity;
             }
             throw new IOException("application identity does not match the process this driver started");

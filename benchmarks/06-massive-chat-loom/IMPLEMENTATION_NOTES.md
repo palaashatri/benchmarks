@@ -6,11 +6,11 @@ The HTTP control plane and persistent TCP listener share room state. Each TCP co
 
 All listeners bind `127.0.0.1`. `PORT=0` selects an independently bound ephemeral HTTP port; `/runtime` reports PID, role, run token, Java version, executable, actual collector names and JVM arguments. `BENCH_PORT_FILE` is published after startup. Run `cd app && ./mvnw -B test` for external process/socket correctness checks and `cd harness && ./mvnw -B test` for smoke-result identity checks.
 
-These are Tier 1 functional prototypes. The shared harness accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.
+The HTTP harness is a functional smoke client, not the measurement path. It accepts `--base-url`, `--requests`, `--threads`, `--runs` and `--out`, executes every requested repetition, and writes a `smoke` envelope with `measurement_valid=false` and `kpis=null`. It does not report GC, RSS, CPU, percentile or throughput measurements from the load generator.
 
 ## Measurement lane
 
-Chat delivery is measured by `harness/src/main/java/com/palaashatri/bench/b06/harness/ChatLoad.java`, not by the HTTP engine. The driver starts the application, opens persistent subscriber and publisher connections over the newline-framed TCP protocol, publishes on an open-loop schedule, and measures delivery latency from each message's intended send time. Every message frame received is checked against the server's queued-delivery count (conservation). Application CPU and RSS are sampled from `/proc` for the application process only.
+Chat delivery is measured by `harness/src/main/java/com/palaashatri/bench/b06/harness/ChatLoad.java`. Run standalone (`benchctl lane chat`), the driver starts the application itself. Under the Tier 2 engine's `framed-tcp` shape, the engine starts and samples the application, and the driver attaches to it with `--attach-base-url`, `--run-token` and `--app-pid` rather than starting one. Either way the driver opens persistent subscriber and publisher connections over the newline-framed TCP protocol, publishes on an open-loop schedule, and measures delivery latency from each message's intended send time. Every message frame received is checked against the server's queued-delivery count (conservation). Application CPU and RSS are sampled from `/proc` for the application process only.
 
 Run it after building the application and the harness:
 
@@ -20,3 +20,7 @@ Run it after building the application and the harness:
 ```
 
 Latency is measured by the driver, not the application, and the envelope says so.
+
+## Validity
+
+06 is Tier 2. Its contract (`benchmarks/06-massive-chat-loom/tier2.json`) runs the correctness test, builds the application and the driver, and measures under the shared gates: identity, zero errors (error frames and conservation failures), every scheduled message sent, warm-up stability, five repetitions and host preflight. An envelope is measurement-valid only when every gate passes on controlled hardware.

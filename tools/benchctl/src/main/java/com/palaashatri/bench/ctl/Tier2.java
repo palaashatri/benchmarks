@@ -2,6 +2,7 @@ package com.palaashatri.bench.ctl;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
@@ -72,7 +73,7 @@ public final class Tier2 {
                            String identityPath, Path loadMix, List<String> correctness, List<String> build,
                            String classpathFile, List<String> classpathPrefix, List<String> jvmOptions,
                            long minJdk, long maxJdk, String tier, String telemetryScope, String loadShape,
-                           JobDriver.Contract jobs) {
+                           JobDriver.Contract jobs, Map<String, Object> spec) {
     }
 
     public record Options(String javaHome, String loadgenJavaHome, String collector, double targetRate,
@@ -105,14 +106,14 @@ public final class Tier2 {
                 .filter(item -> workloadId.equals(item.get("id"))).findFirst()
                 .orElseThrow(() -> new BenchError(workloadId + " is not in benchmarks/catalog.json"));
         String loadShape = spec.containsKey("load_shape") ? string(spec, "load_shape") : "http-mix";
-        if (!Set.of("http-mix", "jobs").contains(loadShape)) {
-            throw new BenchError("load_shape must be http-mix or jobs, not " + loadShape);
+        if (!Set.of("http-mix", "jobs", "startup", "framed-tcp").contains(loadShape)) {
+            throw new BenchError("load_shape must be http-mix, jobs, startup or framed-tcp, not " + loadShape);
         }
         Path loadMix = null;
         JobDriver.Contract jobs = null;
         if (loadShape.equals("jobs")) {
             jobs = jobContract(spec);
-        } else {
+        } else if (loadShape.equals("http-mix")) {
             loadMix = directory.resolve(string(spec, "load_mix"));
         }
         return new Workload(
@@ -130,7 +131,7 @@ public final class Tier2 {
                 strings(spec.get("jvm_options")),
                 ((Number) entry.get("min_jdk")).longValue(),
                 ((Number) entry.get("max_jdk")).longValue(),
-                String.valueOf(entry.get("tier")), telemetryScope(spec), loadShape, jobs);
+                String.valueOf(entry.get("tier")), telemetryScope(spec), loadShape, jobs, spec);
     }
 
     /** The job endpoints a {@code jobs} load shape needs, declared under {@code "jobs"} in tier2.json. */
@@ -244,6 +245,9 @@ public final class Tier2 {
             correctnessGate(workload, environment, output.resolve("correctness.log"));
         }
         String classpath = buildClasspath(workload, environment, output.resolve("build-workload.log"));
+        if (workload.loadShape().equals("framed-tcp")) {
+            buildDriver(workload, environment, output.resolve("build-driver.log"));
+        }
         Path loadgenJava = options.loadgenJavaHome() != null ? Path.of(options.loadgenJavaHome())
                 : defaultLoadgenJavaHome();
         Map<String, String> loadgenEnvironment = javaEnvironment(loadgenJava.toAbsolutePath().normalize());
@@ -368,14 +372,17 @@ public final class Tier2 {
                     : new Telemetry.Sampler(process.pid(), directory.resolve("process-samples.jsonl"),
                             Duration.ofMillis(100));
             sampler.start();
-            loadResult = generateLoad(spec, port, directory);
+            loadResult = generateLoad(spec, port, directory, process.pid(), token);
             if (tree) {
                 reportedChildren = childProcessesOf(port);
             }
-            warmupCheck = Stats.warmupStability(doubles(at(loadResult, "series", "completed")),
-                    spec.options().warmupSeconds());
-            latencyCheck = Stats.warmupStability(doubles(at(loadResult, "series", "p50_ms")),
-                    spec.options().warmupSeconds(), Stats.STABLE_WINDOW, LATENCY_PROVISIONAL_MAX_CV);
+            // A startup run has no steady state to warm up to: each start is a cold start. Its gates are per mode instead.
+            if (!"startup".equals(spec.workload().loadShape())) {
+                warmupCheck = Stats.warmupStability(doubles(at(loadResult, "series", "completed")),
+                        spec.options().warmupSeconds());
+                latencyCheck = Stats.warmupStability(doubles(at(loadResult, "series", "p50_ms")),
+                        spec.options().warmupSeconds(), Stats.STABLE_WINDOW, LATENCY_PROVISIONAL_MAX_CV);
+            }
             // The recording is dumped while the JVM is alive, which works on every operating system, then
             // the process is stopped.
             Telemetry.runTool(List.of(jcmd.toString(), Long.toString(process.pid()), "JFR.dump", "name=bench",
@@ -468,6 +475,7 @@ public final class Tier2 {
         result.put("environment", environmentFingerprint);
         result.put("load", loadResult);
         result.put("warmup_stability", warmupCheck);
+        result.put("load_shape", spec.workload().loadShape());
         result.put("latency_stability", latencyCheck);
         result.put("child_processes_reported", reportedChildren);
         result.put("telemetry", telemetry);
@@ -476,10 +484,13 @@ public final class Tier2 {
         return result;
     }
 
-    private Map<String, Object> generateLoad(RepetitionSpec spec, int port, Path directory) {
-        Map<String, Object> result = "jobs".equals(spec.workload().loadShape())
-                ? jobLoad(spec, port, directory)
-                : httpLoad(spec, port, directory);
+    private Map<String, Object> generateLoad(RepetitionSpec spec, int port, Path directory, long pid, String token) {
+        Map<String, Object> result = switch (spec.workload().loadShape()) {
+            case "jobs" -> jobLoad(spec, port, directory);
+            case "startup" -> startupLoad(spec, port, directory);
+            case "framed-tcp" -> chatLoad(spec, port, pid, token, directory);
+            default -> httpLoad(spec, port, directory);
+        };
         Map<String, Object> errors = Json.asMap(result.get("errors"));
         if (!isZero(errors.get("measurement"))) {
             throw new BenchError("measurement phase contains request errors");
@@ -656,6 +667,200 @@ public final class Tier2 {
         result.put("errors", Json.map("warmup", errorsWarmup, "measurement", errorsMeasure));
         result.put("kpis", kpis);
         result.put("series", series);
+        result.put("mix", List.of());
+        return result;
+    }
+
+    /**
+     * The startup shape. The application starts a child JVM under each mode and reports how long each took to become
+     * healthy. Every start is a cold start, so there is no warm-up; each mode's times are summarised on their own.
+     */
+    private Map<String, Object> startupLoad(RepetitionSpec spec, int port, Path directory) {
+        Map<String, Object> contract = Json.asMap(spec.workload().spec().get("startup"));
+        String url = "http://127.0.0.1:" + port + string(contract, "submit_path");
+        String field = string(contract, "response_field");
+        List<String> modes = strings(contract.get("modes"));
+        int starts = ((Number) contract.get("starts_per_mode")).intValue();
+        Map<String, Object> byMode = new LinkedHashMap<>();
+        long scheduled = 0;
+        long completed = 0;
+        long errors = 0;
+        long began = System.nanoTime();
+        for (String mode : modes) {
+            List<Double> samples = new ArrayList<>();
+            long modeErrors = 0;
+            for (int start = 0; start < starts; start++) {
+                scheduled++;
+                Double milliseconds = startOnce(url, mode, field);
+                if (milliseconds == null) {
+                    modeErrors++;
+                    errors++;
+                } else {
+                    samples.add(milliseconds);
+                    completed++;
+                }
+            }
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("samples_ms", samples);
+            summary.put("errors", modeErrors);
+            summary.put("median_ms", Stats.median(samples));
+            summary.put("cv", Stats.coefficientOfVariation(samples));
+            byMode.put(mode, summary);
+        }
+        double elapsed = (System.nanoTime() - began) / 1e9;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schema_version", "1.0.0");
+        result.put("benchmark", spec.workload().id());
+        result.put("load_model", "startup");
+        result.put("phases", Json.map("warmup_s", 0, "measure_s", elapsed));
+        result.put("scheduled", Json.map("warmup", 0, "measurement", scheduled));
+        result.put("completed", Json.map("warmup", 0, "measurement", completed));
+        result.put("errors", Json.map("warmup", 0, "measurement", errors));
+        result.put("kpis", Json.map());
+        result.put("startup", Json.map("field", field, "modes", byMode));
+        result.put("series", Json.map("bucket_seconds", 1, "completed", List.of(), "p50_ms", List.of()));
+        result.put("mix", List.of());
+        writeJson(directory.resolve("loadgen.json"), result);
+        return result;
+    }
+
+    /** One cold start: the application's time to health for the mode, or null when the start failed. */
+    private static Double startOnce(String url, String mode, String field) {
+        try {
+            Map.Entry<Integer, String> response = postJson(url, Json.write(Map.of("mode", mode)), 120);
+            if (response.getKey() != 200) {
+                return null;
+            }
+            return Json.asMap(Json.parse(response.getValue())).get(field) instanceof Number milliseconds
+                    ? milliseconds.doubleValue() : null;
+        } catch (IOException failure) {
+            return null;
+        }
+    }
+
+    /** POSTs a JSON body. Returns the HTTP status and the response text; a transport failure throws IOException. */
+    static Map.Entry<Integer, String> postJson(String url, String body, int timeoutSeconds) throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setRequestMethod("POST");
+        connection.setDoOutput(true);
+        connection.setRequestProperty("Content-Type", "application/json");
+        connection.setConnectTimeout(500);
+        connection.setReadTimeout(timeoutSeconds * 1000);
+        try {
+            try (OutputStream out = connection.getOutputStream()) {
+                out.write(body.getBytes(StandardCharsets.UTF_8));
+            }
+            int status = connection.getResponseCode();
+            InputStream in = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            String text = in == null ? "" : new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return Map.entry(status, text);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /** The chat driver a framed-tcp workload declares under {@code "driver"} in tier2.json. */
+    private static Map<String, Object> driverSpec(Workload workload) {
+        Map<String, Object> driver = Json.asMap(workload.spec().get("driver"));
+        if (driver.isEmpty()) {
+            throw new BenchError(workload.id() + " is framed-tcp and declares no driver in tier2.json");
+        }
+        return driver;
+    }
+
+    /** Builds the driver a framed-tcp workload runs against the application, in the driver's own project. */
+    private void buildDriver(Workload workload, Map<String, String> environment, Path log) {
+        Map<String, Object> driver = driverSpec(workload);
+        Path directory = workload.directory().resolve(string(driver, "directory"));
+        List<String> contract = strings(driver.get("build"));
+        List<String> command = new ArrayList<>(Repo.mavenCommand(directory));
+        command.addAll(contract.subList(1, contract.size()));
+        Shell.Result result = Shell.run(command, directory, environment, Duration.ofMinutes(15));
+        writeText(log, result.stdout() + "\n" + result.stderr());
+        if (!result.succeeded()) {
+            throw new BenchError(workload.id() + " driver build failed (" + result.exitCode() + "): "
+                    + tail(result.combined()));
+        }
+    }
+
+    /** The driver's classpath: its compiled classes, then the dependency entries its build wrote. */
+    private static String driverClasspath(Workload workload) {
+        Map<String, Object> driver = driverSpec(workload);
+        Path directory = workload.directory().resolve(string(driver, "directory"));
+        List<String> entries = new ArrayList<>();
+        for (String prefix : strings(driver.get("classpath_prefix"))) {
+            entries.add(directory.resolve(prefix).toString());
+        }
+        entries.add(readRequired(directory.resolve(string(driver, "classpath_file"))));
+        return String.join(java.io.File.pathSeparator, entries);
+    }
+
+    /**
+     * The framed-tcp shape. The application the engine launched is the server under test; the chat driver connects to it
+     * over its persistent TCP sessions and publishes on the schedule. The driver runs in its own JVM and does not sample
+     * the application, whose telemetry the engine owns. Its envelope is mapped to the load generator's shape, so the same
+     * gates apply.
+     */
+    private Map<String, Object> chatLoad(RepetitionSpec spec, int port, long pid, String token, Path directory) {
+        Options options = spec.options();
+        Workload workload = spec.workload();
+        Map<String, Object> chat = Json.asMap(workload.spec().get("chat"));
+        Path envelope = directory.resolve("chat-envelope.json");
+        Path java = Repo.javaExecutable(Path.of(spec.loadgenEnvironment().get("JAVA_HOME")), "java");
+        List<String> command = List.of(java.toString(), "-cp", driverClasspath(workload),
+                string(driverSpec(workload), "main_class"),
+                "--attach-base-url", "http://127.0.0.1:" + port,
+                "--run-token", token,
+                "--app-pid", Long.toString(pid),
+                "--subscribers", Integer.toString(((Number) chat.get("subscribers")).intValue()),
+                "--rooms", Integer.toString(((Number) chat.get("rooms")).intValue()),
+                "--publishers", Integer.toString(((Number) chat.get("publishers")).intValue()),
+                "--rate", Double.toString(options.targetRate()),
+                "--warmup-seconds", Integer.toString(options.warmupSeconds()),
+                "--measure-seconds", Integer.toString(options.measureSeconds()),
+                "--out", envelope.toString());
+        long timeout = options.warmupSeconds() + options.measureSeconds() + 120L;
+        Shell.Result run = Shell.run(command, repo.root(), spec.loadgenEnvironment(), Duration.ofSeconds(timeout));
+        writeText(directory.resolve("chat-driver.log"), run.stdout() + "\n" + run.stderr());
+        if (!run.succeeded() || !Files.isRegularFile(envelope)) {
+            throw new BenchError("chat driver failed (" + run.exitCode() + "): " + tail(run.stdout() + run.stderr()));
+        }
+        Map<String, Object> results = Json.asMap(Json.asMap(repo.readJson(envelope)).get("results"));
+        return chatSummary(workload.id(), results, options);
+    }
+
+    /**
+     * Maps the chat driver's results to the load generator's shape. The scheduled, completed and error counts are per
+     * message in the measurement window: a message that was not sent or was not acknowledged is missing from completed,
+     * and an error frame or a conservation failure is an error. Throughput is deliveries per measured second.
+     */
+    static Map<String, Object> chatSummary(String benchmark, Map<String, Object> results, Options options) {
+        long scheduledWindow = Math.round(Json.number(results.get("messages_scheduled_in_window")));
+        long scheduledWarmup = Math.round(options.targetRate() * options.warmupSeconds());
+        long sentWindow = Math.round(Json.number(results.get("messages_sent_in_window")));
+        long delivered = Math.round(Json.number(results.get("deliveries_in_window")));
+        long errors = Math.round(Json.number(results.get("error_frames")))
+                + (Boolean.TRUE.equals(results.get("conserved")) ? 0 : 1);
+        Map<String, Object> latency = Json.asMap(results.get("delivery_latency_ms"));
+        Map<String, Object> kpis = new LinkedHashMap<>();
+        kpis.put("throughput", delivered / (double) options.measureSeconds());
+        kpis.put("p50_ms", latency.get("p50"));
+        kpis.put("p99_ms", latency.get("p99"));
+        kpis.put("p999_ms", latency.get("p999"));
+        kpis.put("max_ms", latency.get("max"));
+        kpis.put("mean_ms", latency.get("mean"));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schema_version", "1.0.0");
+        result.put("benchmark", benchmark);
+        result.put("load_model", "framed-tcp-chat");
+        result.put("coordinated_omission_corrected", true);
+        result.put("target_rate", options.targetRate());
+        result.put("phases", Json.map("warmup_s", options.warmupSeconds(), "measure_s", options.measureSeconds()));
+        result.put("scheduled", Json.map("warmup", scheduledWarmup, "measurement", scheduledWindow));
+        result.put("completed", Json.map("warmup", null, "measurement", sentWindow));
+        result.put("errors", Json.map("warmup", null, "measurement", errors));
+        result.put("kpis", kpis);
+        result.put("series", results.get("series"));
         result.put("mix", List.of());
         return result;
     }
@@ -973,9 +1178,22 @@ public final class Tier2 {
                 break;
             }
         }
-        if (repetitions.stream().anyMatch(item -> !Boolean.TRUE.equals(
+        if (repetitions.stream().filter(item -> !"startup".equals(item.get("load_shape"))).anyMatch(item -> !Boolean.TRUE.equals(
                 Json.asMap(item.get("warmup_stability")).get("stable_before_measurement")))) {
             reasons.add("throughput did not stabilise within warm-up in one or more repetitions");
+        }
+        for (Map<String, Object> repetition : repetitions) {
+            if (!"startup".equals(repetition.get("load_shape"))) {
+                continue;
+            }
+            for (Map.Entry<String, Object> mode : Json.asMap(at(repetition, "load", "startup", "modes")).entrySet()) {
+                Object cv = at(mode.getValue(), "cv");
+                if (cv instanceof Number value && value.doubleValue() > LANE_MAX_CV) {
+                    reasons.add(String.format(java.util.Locale.ROOT,
+                            "startup times for mode %s vary by more than 10%%: coefficient of variation %.4f",
+                            mode.getKey(), value.doubleValue()));
+                }
+            }
         }
         if (repetitions.stream().anyMatch(item -> item.get("actual_collector") == null)) {
             reasons.add("actual collector could not be established from JVM logs");
@@ -1149,6 +1367,13 @@ public final class Tier2 {
         }
         aggregate.put("process_tree_native_memory_committed_mb", metric(treeNativeMemory, seed + 16));
         aggregate.put("process_tree_jfr_allocation_sample_rate_mb_s", metric(treeAllocationRates, seed + 17));
+        // Startup workloads: the median time to health of each mode's cold starts, per repetition.
+        aggregate.put("startup_default_median_ms", metric(
+                values(repetitions, List.of("load", "startup", "modes", "default", "median_ms")), seed + 18));
+        aggregate.put("startup_no_cds_median_ms", metric(
+                values(repetitions, List.of("load", "startup", "modes", "no-cds", "median_ms")), seed + 19));
+        aggregate.put("startup_appcds_median_ms", metric(
+                values(repetitions, List.of("load", "startup", "modes", "appcds", "median_ms")), seed + 20));
         List<Double> allocationRates = new ArrayList<>();
         for (Map<String, Object> repetition : repetitions) {
             Object weight = at(repetition, "telemetry", "jfr", "allocation_sample_weight_bytes");

@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Test;
 /** Every workload that declares a Tier 2 contract is catalogued as Tier 2, and its contract is well formed. */
 class Tier2ContractTest {
     private static final Set<String> REQUIRED_KEYS = Set.of("app_dir", "main_class", "token_prefix", "identity_path",
-            "load_mix", "correctness", "build", "classpath_file");
+            "correctness", "build", "classpath_file");
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "DELETE");
 
     private final Repo repo = Repo.locate();
@@ -38,11 +38,30 @@ class Tier2ContractTest {
         }
     }
 
+    /** The load shape a contract declares; http-mix when it declares none, as the engine reads it. */
+    private static String loadShape(Map<String, Object> spec) {
+        return spec.containsKey("load_shape") ? String.valueOf(spec.get("load_shape")) : "http-mix";
+    }
+
+    /** The keys a contract needs: the common ones, plus the one its load shape reads. */
+    private static Set<String> requiredKeys(Map<String, Object> spec) {
+        Set<String> required = new HashSet<>(REQUIRED_KEYS);
+        required.add(switch (loadShape(spec)) {
+            case "http-mix" -> "load_mix";
+            case "jobs" -> "jobs";
+            case "startup" -> "startup";
+            case "framed-tcp" -> "driver";
+            default -> throw new BenchError("unknown load_shape " + loadShape(spec));
+        });
+        return required;
+    }
+
     @Test
     void everyDeclaredContractHasTheRequiredFields() throws IOException {
         for (String workload : declaredWorkloads()) {
-            Set<String> missing = new HashSet<>(REQUIRED_KEYS);
-            missing.removeAll(contract(workload).keySet());
+            Map<String, Object> spec = contract(workload);
+            Set<String> missing = requiredKeys(spec);
+            missing.removeAll(spec.keySet());
             assertTrue(missing.isEmpty(), workload + " is missing " + missing);
         }
     }
@@ -65,14 +84,24 @@ class Tier2ContractTest {
             Path directory = repo.workloadDirectory(workload);
             Map<String, Object> spec = contract(workload);
             assertTrue(Files.isDirectory(directory.resolve(String.valueOf(spec.get("app_dir")))), workload);
-            assertTrue(Files.isRegularFile(directory.resolve(String.valueOf(spec.get("load_mix")))), workload);
+            if ("http-mix".equals(loadShape(spec))) {
+                assertTrue(Files.isRegularFile(directory.resolve(String.valueOf(spec.get("load_mix")))), workload);
+            }
+            if (spec.containsKey("driver")) {
+                Map<String, Object> driver = Json.asMap(spec.get("driver"));
+                assertTrue(Files.isDirectory(directory.resolve(String.valueOf(driver.get("directory")))), workload);
+            }
         }
     }
 
     @Test
     void requestMixesAreWellFormed() throws IOException {
         for (String workload : declaredWorkloads()) {
-            Path mix = repo.workloadDirectory(workload).resolve(String.valueOf(contract(workload).get("load_mix")));
+            Map<String, Object> spec = contract(workload);
+            if (!"http-mix".equals(loadShape(spec))) {
+                continue;
+            }
+            Path mix = repo.workloadDirectory(workload).resolve(String.valueOf(spec.get("load_mix")));
             List<String> lines = Files.readAllLines(mix).stream()
                     .filter(line -> !line.isBlank() && !line.startsWith("#")).toList();
             assertFalse(lines.isEmpty(), workload + " has no request templates");

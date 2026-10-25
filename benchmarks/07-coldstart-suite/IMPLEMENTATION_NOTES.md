@@ -58,14 +58,12 @@ and returned with each measurement, so the flags in a result come from the launc
 
 ## Validity
 
-This lane is **Tier 1 and not a benchmark**. It exercises the three modes, but the measurements do
-not yet meet the validity gates:
+07 is Tier 2 and runs through two paths: the Tier 2 engine's `startup` shape (`benchctl tier2 --workload 07-coldstart-suite`) and the startup lane (`benchctl lane startup`). Both record host preflight before and after, apply the shared gates, and hold the coefficient of variation of each mode's times to 10 %. An envelope is measurement-valid only when every gate passes on controlled hardware. Known limits:
 
-- no host preflight: the governor is not observable in the sandbox, and the parent runs on an
-  uncontrolled host;
-- no page-cache control: a cold page cache needs root, so each start is warm in the page cache;
-- no repetition statistics: a startup benchmark needs many starts per mode, with dispersion and
-  outlier reporting. The controller has no lane that starts and stops the application per sample.
+- the page cache is warm: a cold page cache needs root, so each start is warm in the page cache;
+- only the parent process is profiled, because a child JFR recording would change the start times it measures;
+- AppCDS needs the packaged application JAR, because CDS refuses a class directory;
+- in a calibration run the no-cds mode's coefficient of variation was 11.6 %, above the 10 % gate, so that median is not yet calibrated.
 
 A sandbox check during implementation found that AppCDS children started faster than
 default-archive children. Those numbers were not recorded as results.
