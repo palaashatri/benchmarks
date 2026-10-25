@@ -82,3 +82,7 @@ default-archive children. Those numbers were not recorded as results.
   `tools/workload_tests/test_architecture.py` stops applications with `kill()`, and its forced-exit
   test does so on purpose, so `bench-child-*` directories accumulate in the system temporary
   directory after those tests. This is a known gap in the shared test helper, not in this workload.
+
+## Startup lane
+
+`tools/app_lanes.py startup` starts the application from its JAR, takes the application's own spawn-to-ready time for each child JVM under each mode, and writes a calibration envelope with the median, the median absolute deviation, a bootstrap interval, outliers and any failures. The driver cross-checks its times against the application's recorded samples. Failures are counted, not dropped.

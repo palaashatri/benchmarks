@@ -1,0 +1,5 @@
+# Weighted request templates (weight, method, path, body). Generated for the open-loop engine.
+40	GET	/api/v1/service/0/inventory/item-1
+30	GET	/api/v1/service/1/inventory/item-1
+20	GET	/api/v1/service/2/inventory/item-1
+10	GET	/api/v1/fleet/status

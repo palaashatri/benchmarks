@@ -56,3 +56,7 @@ This lane is **Tier 1 and not a benchmark**:
   job, not a pure I/O rate.
 - The `value > 0.5` filter and the six-decimal rounding are deliberate parts of the canonical
   output. Changing either changes the reference too.
+
+## Job lane
+
+`tools/app_lanes.py jobs` submits jobs (sequentially or with a concurrency), polls each until it completes, and takes the application's own throughput, I/O and elapsed figures. Failed and timed-out jobs are listed in the envelope, and digest matches are counted. Resident memory is sampled from `/proc` for the application process.
