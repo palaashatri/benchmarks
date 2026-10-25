@@ -68,7 +68,7 @@
     {
       "id": "08-etl-batch",
       "path": "benchmarks/08-etl-batch",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
       "status": "local ETL jobs whose output digest is checked against an in-memory reference; measured by a job lane that submits jobs and reads the application's own timings; no measurement-valid results yet"

@@ -435,7 +435,8 @@ public final class Lanes {
                     List<Future<Map<String, Object>>> futures = new ArrayList<>();
                     for (int job = 0; job < jobs; job++) {
                         long intended = start + job * intervalNanos;
-                        futures.add(pool.submit(() -> scheduledJob(app, intended, jobTimeoutSeconds)));
+                        futures.add(pool.submit(() -> JobDriver.scheduledJob(app.base, JobDriver.ETL, intended,
+                                jobTimeoutSeconds)));
                     }
                     for (Future<Map<String, Object>> future : futures) {
                         records.add(future.get());
@@ -491,37 +492,6 @@ public final class Lanes {
             repetition.put("metrics", Map.of());
         }
         return repetition;
-    }
-
-    /** One job: started at its intended time (or as soon as a worker is free), then timed to completion. */
-    private static Map<String, Object> scheduledJob(Application app, long intended, int timeoutSeconds) {
-        sleepUntil(intended);
-        long submitted = System.nanoTime();
-        Map<String, Object> status = runJob(app, timeoutSeconds);
-        long finished = System.nanoTime();
-        Map<String, Object> record = new LinkedHashMap<>(status);
-        record.put("submission_lag_ms", (submitted - intended) / 1e6);
-        record.put("sojourn_ms", (finished - intended) / 1e6);
-        return record;
-    }
-
-    private static Map<String, Object> runJob(Application app, int timeoutSeconds) {
-        Response response = app.post("/api/v1/etl/run", Json.map(), 180);
-        if (response.status() != 200) {
-            return Json.map("status", "rejected", "failure", response.body());
-        }
-        Object job = Json.asMap(Json.parse(response.body())).get("job_id");
-        long deadline = System.nanoTime() + Duration.ofSeconds(timeoutSeconds).toNanos();
-        while (true) {
-            Map<String, Object> snapshot = app.getJson("/api/v1/etl/" + job + "/status", 60);
-            if ("completed".equals(snapshot.get("status")) || "failed".equals(snapshot.get("status"))) {
-                return snapshot;
-            }
-            if (System.nanoTime() > deadline) {
-                return Json.map("job_id", job, "status", "timeout", "failure", "job did not finish in time");
-            }
-            sleep(100);
-        }
     }
 
     /** Chat-lane settings, taken from the 06 driver's own command line. */

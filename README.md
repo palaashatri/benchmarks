@@ -6,9 +6,9 @@ It runs the same way on Linux, Windows and macOS. The only requirements are a JD
 
 ## Current readiness
 
-Eleven workloads are catalogued **Tier 2** (measurement-ready in code): `00` through `05` and `09` through `13`. The Tier 2 engine launches each application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes. No measurement-valid results exist yet, and benchmark execution waits for controlled hardware.
+Twelve workloads are catalogued **Tier 2** (measurement-ready in code): `00` through `05`, `08`, and `09` through `13`. The Tier 2 engine launches each application JVM, drives it with the shared open-loop HdrHistogram generator, collects application-process telemetry, and applies statistical and host-preflight validity gates. A passing process exit is not sufficient: `measurement_valid` stays `false` unless every gate passes. No measurement-valid results exist yet, and benchmark execution waits for controlled hardware.
 
-Workloads `02`, `10` and `11` use process-tree telemetry: the gateway and every child JVM are sampled, logged and captured. Each child writes its own native memory summary and flight recording as it exits. Workloads `06`, `07` and `08` are Tier 1. They run five repetitions through the controller's lanes (`benchctl lane chat|startup|jobs`) under the same gates as the Tier 2 engine, and their envelopes stay invalid until they are promoted.
+Workloads `02`, `10` and `11` use process-tree telemetry: the gateway and every child JVM are sampled, logged and captured. Each child writes its own native memory summary and flight recording as it exits. Workload `08` is Tier 2: the engine submits its jobs on the open-loop schedule and times each to completion. Workloads `06` and `07` are Tier 1. They run five repetitions through the controller's lanes (`benchctl lane chat|startup`) under the same gates as the Tier 2 engine, and their envelopes stay invalid until they are promoted.
 
 See `IMPLEMENTATION_STATUS.md` and `METHODOLOGY.md` for the audited per-workload state.
 

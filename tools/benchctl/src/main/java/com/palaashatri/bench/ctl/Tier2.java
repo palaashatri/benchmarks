@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +22,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
@@ -59,11 +63,16 @@ public final class Tier2 {
         this.out = out;
     }
 
-    /** A Tier 2 workload as declared by its benchmarks/<id>/tier2.json contract and its catalogue entry. */
+    /**
+     * A Tier 2 workload as declared by its benchmarks/<id>/tier2.json contract and its catalogue entry. The
+     * {@code loadShape} is {@code http-mix} (the load generator drives the request mix in {@code loadMix}) or {@code jobs}
+     * (the engine submits jobs on the schedule and times each to completion, described by {@code jobs}).
+     */
     public record Workload(String id, Path directory, Path appDirectory, String mainClass, String tokenPrefix,
                            String identityPath, Path loadMix, List<String> correctness, List<String> build,
                            String classpathFile, List<String> classpathPrefix, List<String> jvmOptions,
-                           long minJdk, long maxJdk, String tier, String telemetryScope) {
+                           long minJdk, long maxJdk, String tier, String telemetryScope, String loadShape,
+                           JobDriver.Contract jobs) {
     }
 
     public record Options(String javaHome, String loadgenJavaHome, String collector, double targetRate,
@@ -95,6 +104,17 @@ public final class Tier2 {
         Map<String, Object> entry = repo.catalog().stream()
                 .filter(item -> workloadId.equals(item.get("id"))).findFirst()
                 .orElseThrow(() -> new BenchError(workloadId + " is not in benchmarks/catalog.json"));
+        String loadShape = spec.containsKey("load_shape") ? string(spec, "load_shape") : "http-mix";
+        if (!Set.of("http-mix", "jobs").contains(loadShape)) {
+            throw new BenchError("load_shape must be http-mix or jobs, not " + loadShape);
+        }
+        Path loadMix = null;
+        JobDriver.Contract jobs = null;
+        if (loadShape.equals("jobs")) {
+            jobs = jobContract(spec);
+        } else {
+            loadMix = directory.resolve(string(spec, "load_mix"));
+        }
         return new Workload(
                 workloadId,
                 directory,
@@ -102,7 +122,7 @@ public final class Tier2 {
                 string(spec, "main_class"),
                 string(spec, "token_prefix"),
                 string(spec, "identity_path"),
-                directory.resolve(string(spec, "load_mix")),
+                loadMix,
                 strings(spec.get("correctness")),
                 strings(spec.get("build")),
                 string(spec, "classpath_file"),
@@ -110,7 +130,18 @@ public final class Tier2 {
                 strings(spec.get("jvm_options")),
                 ((Number) entry.get("min_jdk")).longValue(),
                 ((Number) entry.get("max_jdk")).longValue(),
-                String.valueOf(entry.get("tier")), telemetryScope(spec));
+                String.valueOf(entry.get("tier")), telemetryScope(spec), loadShape, jobs);
+    }
+
+    /** The job endpoints a {@code jobs} load shape needs, declared under {@code "jobs"} in tier2.json. */
+    private static JobDriver.Contract jobContract(Map<String, Object> spec) {
+        Map<String, Object> jobs = Json.asMap(spec.get("jobs"));
+        if (jobs.isEmpty()) {
+            throw new BenchError("a jobs load_shape needs a jobs object in tier2.json");
+        }
+        return new JobDriver.Contract(string(jobs, "submit_path"), string(jobs, "status_path"),
+                string(jobs, "job_id_field"), string(jobs, "state_field"), string(jobs, "completed_state"),
+                string(jobs, "failed_state"));
     }
 
     /** Parses the command line. Flags mirror the engine's documented options; every value has a stated default. */
@@ -446,6 +477,23 @@ public final class Tier2 {
     }
 
     private Map<String, Object> generateLoad(RepetitionSpec spec, int port, Path directory) {
+        Map<String, Object> result = "jobs".equals(spec.workload().loadShape())
+                ? jobLoad(spec, port, directory)
+                : httpLoad(spec, port, directory);
+        Map<String, Object> errors = Json.asMap(result.get("errors"));
+        if (!isZero(errors.get("measurement"))) {
+            throw new BenchError("measurement phase contains request errors");
+        }
+        Map<String, Object> completed = Json.asMap(result.get("completed"));
+        Map<String, Object> scheduled = Json.asMap(result.get("scheduled"));
+        if (!Objects.equals(completed.get("measurement"), scheduled.get("measurement"))) {
+            throw new BenchError("measurement phase did not complete every scheduled request");
+        }
+        return result;
+    }
+
+    /** The http-mix shape: the load generator drives the workload's request mix on the open-loop schedule. */
+    private Map<String, Object> httpLoad(RepetitionSpec spec, int port, Path directory) {
         Options options = spec.options();
         Workload workload = spec.workload();
         Path loadOutput = directory.resolve("loadgen.json");
@@ -471,16 +519,144 @@ public final class Tier2 {
             throw new BenchError("load generator failed (" + load.exitCode() + "): "
                     + tail(load.stdout() + load.stderr()));
         }
-        Map<String, Object> result = Json.asMap(repo.readJson(loadOutput));
-        Map<String, Object> errors = Json.asMap(result.get("errors"));
-        if (!isZero(errors.get("measurement"))) {
-            throw new BenchError("measurement phase contains request errors");
+        return Json.asMap(repo.readJson(loadOutput));
+    }
+
+    /** Seconds a single job may take from its submission to completion before it is recorded as a timeout. */
+    static final int JOB_TIMEOUT_SECONDS = 120;
+
+    /**
+     * The jobs shape. Jobs are submitted on the load generator's open-loop schedule, and each is timed from its intended
+     * submission to its completion. The result has the load generator's shape, so the same gates apply to it.
+     */
+    private Map<String, Object> jobLoad(RepetitionSpec spec, int port, Path directory) {
+        Options options = spec.options();
+        Workload workload = spec.workload();
+        String base = "http://127.0.0.1:" + port;
+        long interval = (long) (1e9 / options.targetRate());
+        int count = (int) Math.round((options.warmupSeconds() + options.measureSeconds()) * options.targetRate());
+        long start = System.nanoTime();
+        ExecutorService pool = Executors.newFixedThreadPool(Math.max(1, options.threads()));
+        try {
+            List<Future<Map<String, Object>>> futures = new ArrayList<>();
+            for (int job = 0; job < count; job++) {
+                long intended = start + job * interval;
+                futures.add(pool.submit(() -> {
+                    Map<String, Object> record = JobDriver.scheduledJob(base, workload.jobs(), intended,
+                            JOB_TIMEOUT_SECONDS);
+                    record.put("intended_s", (intended - start) / 1e9);
+                    return record;
+                }));
+            }
+            List<Map<String, Object>> records = new ArrayList<>();
+            for (Future<Map<String, Object>> future : futures) {
+                records.add(future.get());
+            }
+            writeJson(directory.resolve("jobs.json"), records);
+            Map<String, Object> result = jobSummary(workload.id(), records, options.targetRate(),
+                    options.warmupSeconds(), options.measureSeconds());
+            writeJson(directory.resolve("loadgen.json"), result);
+            return result;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new BenchError("job load was interrupted");
+        } catch (ExecutionException failure) {
+            throw new BenchError("job load failed: " + failure.getMessage(), failure);
+        } finally {
+            pool.shutdownNow();
         }
-        Map<String, Object> completed = Json.asMap(result.get("completed"));
-        Map<String, Object> scheduled = Json.asMap(result.get("scheduled"));
-        if (!Objects.equals(completed.get("measurement"), scheduled.get("measurement"))) {
-            throw new BenchError("measurement phase did not complete every scheduled request");
+    }
+
+    /**
+     * Summarises job records in the load generator's shape. Each record carries its {@code intended_s} offset from the
+     * start of the run. Only measurement-phase completions feed the throughput and latency figures. A job that is not
+     * completed, or whose output digest does not match, is an error in its phase.
+     */
+    static Map<String, Object> jobSummary(String benchmark, List<Map<String, Object>> records, double rate,
+                                          int warmupSeconds, int measureSeconds) {
+        int buckets = warmupSeconds + measureSeconds;
+        long scheduledWarmup = 0;
+        long scheduledMeasure = 0;
+        long completedWarmup = 0;
+        long completedMeasure = 0;
+        long errorsWarmup = 0;
+        long errorsMeasure = 0;
+        long[] scheduled = new long[buckets];
+        long[] completed = new long[buckets];
+        List<List<Double>> latencyByBucket = new ArrayList<>();
+        for (int bucket = 0; bucket < buckets; bucket++) {
+            latencyByBucket.add(new ArrayList<>());
         }
+        List<Double> measureLatencies = new ArrayList<>();
+        for (Map<String, Object> record : records) {
+            double intended = ((Number) record.get("intended_s")).doubleValue();
+            boolean warmup = intended < warmupSeconds;
+            int startBucket = Math.min(buckets - 1, (int) Math.floor(intended));
+            scheduled[startBucket]++;
+            if (warmup) {
+                scheduledWarmup++;
+            } else {
+                scheduledMeasure++;
+            }
+            boolean succeeded = "completed".equals(record.get("status"))
+                    && Boolean.TRUE.equals(record.get("digest_match"));
+            if (!succeeded) {
+                if (warmup) {
+                    errorsWarmup++;
+                } else {
+                    errorsMeasure++;
+                }
+                continue;
+            }
+            double sojourn = ((Number) record.get("sojourn_ms")).doubleValue();
+            int finishBucket = Math.min(buckets - 1, (int) Math.floor(intended + sojourn / 1000.0));
+            completed[finishBucket]++;
+            latencyByBucket.get(startBucket).add(sojourn);
+            if (warmup) {
+                completedWarmup++;
+            } else {
+                completedMeasure++;
+                measureLatencies.add(sojourn);
+            }
+        }
+        List<Object> p50Series = new ArrayList<>();
+        List<Object> scheduledSeries = new ArrayList<>();
+        List<Object> completedSeries = new ArrayList<>();
+        for (int bucket = 0; bucket < buckets; bucket++) {
+            scheduledSeries.add(scheduled[bucket]);
+            completedSeries.add(completed[bucket]);
+            p50Series.add(Telemetry.percentile(latencyByBucket.get(bucket), 50));
+        }
+        Map<String, Object> kpis = new LinkedHashMap<>();
+        kpis.put("throughput", completedMeasure / (double) measureSeconds);
+        kpis.put("p50_ms", Telemetry.percentile(measureLatencies, 50));
+        kpis.put("p95_ms", Telemetry.percentile(measureLatencies, 95));
+        kpis.put("p99_ms", Telemetry.percentile(measureLatencies, 99));
+        kpis.put("p999_ms", Telemetry.percentile(measureLatencies, 99.9));
+        kpis.put("p9999_ms", Telemetry.percentile(measureLatencies, 99.99));
+        kpis.put("max_ms", measureLatencies.isEmpty() ? null : Collections.max(measureLatencies));
+        kpis.put("mean_ms", Stats.mean(measureLatencies));
+        Map<String, Object> series = new LinkedHashMap<>();
+        series.put("bucket_seconds", 1);
+        series.put("scheduled", scheduledSeries);
+        series.put("scheduled_bucketed_by", "intended_send_time");
+        series.put("completed", completedSeries);
+        series.put("completed_bucketed_by", "completion_time");
+        series.put("p50_ms", p50Series);
+        series.put("p50_bucketed_by", "intended_send_time");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schema_version", "1.0.0");
+        result.put("benchmark", benchmark);
+        result.put("load_model", "open-loop");
+        result.put("coordinated_omission_corrected", true);
+        result.put("target_rate", rate);
+        result.put("phases", Json.map("warmup_s", warmupSeconds, "measure_s", measureSeconds));
+        result.put("scheduled", Json.map("warmup", scheduledWarmup, "measurement", scheduledMeasure));
+        result.put("completed", Json.map("warmup", completedWarmup, "measurement", completedMeasure));
+        result.put("errors", Json.map("warmup", errorsWarmup, "measurement", errorsMeasure));
+        result.put("kpis", kpis);
+        result.put("series", series);
+        result.put("mix", List.of());
         return result;
     }
 
