@@ -38,13 +38,13 @@ public final class ProcessLifecycle {
      * Starts the application on a port that is already taken. It must fail to bind, and every child it started
      * before the failure must be reaped and its temporary directory removed.
      */
-    public static void failedBindReapsChildren(Path classpath, String mainClass, Path temporary) throws Exception {
+    public static void failedBindReapsChildren(String classpath, String mainClass, Path temporary) throws Exception {
         try (java.net.ServerSocket occupied = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             int port = occupied.getLocalPort();
             String token = "failed-bind-" + UUID.randomUUID();
             File log = Files.createFile(temporary.resolve("parent.log")).toFile();
             ProcessBuilder builder = new ProcessBuilder(javaExecutable(),
-                    "-Djava.io.tmpdir=" + temporary, "-cp", classpath.toString(), mainClass, Integer.toString(port))
+                    "-Djava.io.tmpdir=" + temporary, "-cp", classpath, mainClass, Integer.toString(port))
                     .redirectErrorStream(true).redirectOutput(log);
             builder.environment().put("BENCH_RUN_TOKEN", token);
             builder.environment().remove("BENCH_SERVICE_ROLE");

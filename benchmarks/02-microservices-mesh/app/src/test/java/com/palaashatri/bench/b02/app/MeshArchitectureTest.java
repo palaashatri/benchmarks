@@ -102,8 +102,8 @@ class MeshArchitectureTest {
         }
     }
 
-    static Path classpath() {
-        return Path.of(System.getProperty("java.class.path"));
+    static String classpath() {
+        return System.getProperty("java.class.path");
     }
 
     private static long number(Map<String, Object> object, String key) {

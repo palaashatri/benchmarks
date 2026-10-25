@@ -32,7 +32,7 @@ class AutoscalingArchitectureTest {
 
     @Test
     void failedGatewayBindReapsChildrenStartedBeforeTheFailure() throws Exception {
-        ProcessLifecycle.failedBindReapsChildren(Path.of(System.getProperty("java.class.path")), APP, temporary);
+        ProcessLifecycle.failedBindReapsChildren(System.getProperty("java.class.path"), APP, temporary);
     }
 
     @Test

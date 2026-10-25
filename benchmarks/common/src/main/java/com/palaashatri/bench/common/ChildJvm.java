@@ -17,7 +17,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Owns a child from spawn through readiness, failure and termination. */
@@ -180,8 +182,20 @@ public final class ChildJvm implements AutoCloseable {
             catch (InterruptedException again) { interrupted = true; }
         } finally {
             LIVE.remove(this);
+            awaitExit();
             delete(directory);
             if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Windows keeps a child's files locked until the child has fully exited, so wait for that before deleting them. */
+    private void awaitExit() {
+        try {
+            process.onExit().get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException | TimeoutException ignored) {
+            // A child that will not exit is reported by the directory cleanup below.
         }
     }
 
@@ -194,15 +208,26 @@ public final class ChildJvm implements AutoCloseable {
         } catch (IOException ignored) { return ""; }
     }
     private static void delete(Path directory) {
-        // Close directory handles before removing their directories (Windows
-        // and some mounted filesystems reject deletion while traversal is open).
-        java.util.List<Path> entries;
-        try (var paths = Files.walk(directory)) {
-            entries = paths.sorted(java.util.Comparator.reverseOrder()).toList();
-        } catch (IOException ignored) { return; }
-        for (Path path : entries) {
-            try { Files.deleteIfExists(path); }
-            catch (IOException failure) { System.err.println("child cleanup failed for " + path + ": " + failure.getMessage()); }
+        // Remove children before parents (Windows and some mounted filesystems reject deleting a directory that
+        // still holds a file). A file released a moment ago can stay locked briefly, so retry for a short while.
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (true) {
+            java.util.List<Path> entries;
+            try (var paths = Files.walk(directory)) {
+                entries = paths.sorted(java.util.Comparator.reverseOrder()).toList();
+            } catch (IOException ignored) { return; }
+            IOException failure = null;
+            for (Path path : entries) {
+                try { Files.deleteIfExists(path); }
+                catch (IOException locked) { failure = locked; }
+            }
+            if (failure == null) return;
+            if (System.nanoTime() > deadline) {
+                System.err.println("child cleanup failed for " + directory + ": " + failure.getMessage());
+                return;
+            }
+            try { Thread.sleep(50); }
+            catch (InterruptedException interruption) { Thread.currentThread().interrupt(); return; }
         }
     }
 }
