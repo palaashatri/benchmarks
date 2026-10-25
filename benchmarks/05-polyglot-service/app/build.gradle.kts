@@ -6,9 +6,7 @@ plugins {
 group = "com.palaashatri.bench"
 version = "0.1.0"
 
-repositories {
-    mavenCentral()
-}
+// Repositories come from settings.gradle.kts (FAIL_ON_PROJECT_REPOS).
 
 dependencies {
     implementation("org.mozilla:rhino:1.7.15")
