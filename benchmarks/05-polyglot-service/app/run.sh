@@ -34,7 +34,7 @@ fetch_dependency() {
 compile() {
   fetch_dependency
   mkdir -p "$CLASSES_DIR"
-  find src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
+  find src/main/java ../../common/src/main/java -name '*.java' -print | sort > "$SOURCES_FILE"
   javac --release 21 -cp "$RHINO_JAR" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
 

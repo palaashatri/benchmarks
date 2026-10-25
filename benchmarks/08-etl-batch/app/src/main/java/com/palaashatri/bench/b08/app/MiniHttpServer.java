@@ -1,5 +1,8 @@
 package com.palaashatri.bench.b08.app;
 
+import com.palaashatri.bench.common.Json;
+import com.palaashatri.bench.common.RuntimeInfo;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.*;
@@ -50,17 +53,23 @@ public final class MiniHttpServer {
     }
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
         server.createContext("/api/v1/etl/run", this::handleEtlRun);
         server.createContext("/api/v1/etl/jobs", this::handleEtlJobs);
         server.createContext("/api/v1/etl/", this::handleEtlStatus);
         server.createContext("/health", this::handleHealth);
         server.createContext("/metrics", this::handleMetrics);
+        server.createContext("/runtime", this::handleRuntime);
         server.createContext("/actuator/health", this::handleHealth);
         server.createContext("/actuator/prometheus", this::handleMetrics);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
-        log("started", "\"port\":" + port);
+        RuntimeInfo.publishPort(server.getAddress().getPort());
+        log("started", "\"port\":" + server.getAddress().getPort());
+    }
+
+    private void handleRuntime(HttpExchange ex) throws IOException {
+        Json.bytes(ex, 200, "application/json", RuntimeInfo.json());
     }
 
     private void handleEtlRun(HttpExchange ex) throws IOException {
@@ -94,14 +103,14 @@ public final class MiniHttpServer {
     }
 
     private void handleEtlJobs(HttpExchange ex) throws IOException {
-        StringBuilder sb = new StringBuilder("[");
+        StringBuilder sb = new StringBuilder("{\"jobs\":[");
         boolean first = true;
         for (JobState state : jobs.values()) {
             if (!first) sb.append(",");
             sb.append(jobStateJson(state));
             first = false;
         }
-        sb.append("]");
+        sb.append("]}");
         json(ex, 200, sb.toString());
     }
 

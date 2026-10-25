@@ -1,5 +1,8 @@
 package com.palaashatri.bench.b05.app;
 
+import com.palaashatri.bench.common.Json;
+import com.palaashatri.bench.common.RuntimeInfo;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -57,11 +60,12 @@ public final class MiniHttpServer {
         server.createContext("/api/v1/score", this::score);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
+        RuntimeInfo.publishPort(server.getAddress().getPort());
         System.out.printf(
                 "{\"event\":\"started\",\"benchmark\":\"%s\","
                         + "\"engine\":\"rhino-interpreter\",\"host_class_access\":false,"
                         + "\"port\":%d,\"pid\":%d}%n",
-                benchmark, port, ProcessHandle.current().pid());
+                benchmark, server.getAddress().getPort(), ProcessHandle.current().pid());
     }
 
     private void health(HttpExchange exchange) throws IOException {
@@ -72,12 +76,7 @@ public final class MiniHttpServer {
     }
 
     private void runtime(HttpExchange exchange) throws IOException {
-        json(exchange, 200,
-                "{\"pid\":" + ProcessHandle.current().pid()
-                        + ",\"run_token\":\""
-                        + escape(System.getenv().getOrDefault("BENCH_RUN_TOKEN", ""))
-                        + "\",\"java_version\":\""
-                        + escape(System.getProperty("java.version")) + "\"}");
+        json(exchange, 200, RuntimeInfo.json());
     }
 
     private void scriptStatus(HttpExchange exchange) throws IOException {

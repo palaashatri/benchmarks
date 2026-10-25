@@ -17,7 +17,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKLOAD = sys.argv[1] if len(sys.argv) > 1 else ''
-CLASSES = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
+CLASSES = os.pathsep.join(str(Path(part).resolve()) for part in sys.argv[2].split(os.pathsep)) if len(sys.argv) > 2 else None
 if WORKLOAD:
     del sys.argv[1:3]
 

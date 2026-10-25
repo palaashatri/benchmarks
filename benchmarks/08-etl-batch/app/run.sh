@@ -13,7 +13,7 @@ SOURCES_FILE="build/run-sh/sources.txt"
 
 compile_sources() {
   mkdir -p "$CLASSES_DIR"
-  find src/main/java -name '*.java' | sort > "$SOURCES_FILE"
+  find src/main/java ../../common/src/main/java -name '*.java' | sort > "$SOURCES_FILE"
   if [ ! -s "$SOURCES_FILE" ]; then echo "No Java sources found under src/main/java" >&2; exit 1; fi
   javac --release "$JAVA_RELEASE" -d "$CLASSES_DIR" @"$SOURCES_FILE"
 }
