@@ -10,7 +10,6 @@ import argparse
 import dataclasses
 import glob
 import hashlib
-import html
 import json
 import os
 import platform
@@ -25,6 +24,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
+
+import benchctl_report
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE_DIR = ROOT / ".benchctl"
@@ -870,16 +871,13 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    path = Path(args.path)
-    data = _load_result_path(path)
-    output = path / "report.html" if path.is_dir() else path.with_suffix(".html")
-    output.write_text(
-        "<!doctype html><meta charset='utf-8'><title>Benchmark report</title>"
-        "<h1>Benchmark report</h1><pre>"
-        + html.escape(json.dumps(data, indent=2))
-        + "</pre>\n"
-    )
-    print(output)
+    paths = [Path(item) for item in args.paths]
+    if args.output:
+        output = Path(args.output)
+    else:
+        first = paths[0]
+        output = first / "report.html" if first.is_dir() else first.with_suffix(".html")
+    print(benchctl_report.write_report(paths, output, _load_result_path))
     return 0
 
 
@@ -919,8 +917,9 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("right")
     compare.set_defaults(func=cmd_compare)
 
-    report = subparsers.add_parser("report")
-    report.add_argument("path")
+    report = subparsers.add_parser("report", help="render result(s) as a readable HTML report")
+    report.add_argument("paths", nargs="+", metavar="path")
+    report.add_argument("-o", "--output", help="HTML file to write (default: next to the first result)")
     report.set_defaults(func=cmd_report)
     return parser
 
