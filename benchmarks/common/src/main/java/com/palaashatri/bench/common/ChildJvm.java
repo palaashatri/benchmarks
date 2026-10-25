@@ -163,17 +163,22 @@ public final class ChildJvm implements AutoCloseable {
     @Override public void close() { stop(Duration.ofSeconds(2)); }
 
     /**
-     * Terminate the child, allowing {@code grace} for a clean exit before forcing it. A child that writes
-     * state on exit (for example a dynamic CDS archive) needs a longer grace than {@link #close()} allows.
+     * Terminate the child, allowing {@code grace} for a clean exit before forcing it. The first request is the
+     * end of the child's stdin: {@link RuntimeInfo#watchParent()} turns that into {@code System.exit}, so shutdown
+     * hooks run and a child that writes state on exit (for example a dynamic CDS archive) finishes writing it.
+     * Windows {@code destroy()} terminates the process without that exit, so it is only the fallback.
      */
     public void stop(Duration grace) {
         if (!closed.compareAndSet(false, true)) return;
         boolean interrupted = Thread.interrupted();
-        process.destroy();
+        closeInput();
         try {
             if (!process.waitFor(grace.toMillis(), TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
-                process.waitFor(2, TimeUnit.SECONDS);
+                process.destroy();
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    process.waitFor(2, TimeUnit.SECONDS);
+                }
             }
         } catch (InterruptedException interruption) {
             interrupted = true;
@@ -186,6 +191,11 @@ public final class ChildJvm implements AutoCloseable {
             delete(directory);
             if (interrupted) Thread.currentThread().interrupt();
         }
+    }
+
+    private void closeInput() {
+        try { process.getOutputStream().close(); }
+        catch (IOException ignored) { /* The child has already exited or closed its input. */ }
     }
 
     /** Windows keeps a child's files locked until the child has fully exited, so wait for that before deleting them. */
