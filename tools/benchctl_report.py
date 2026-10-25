@@ -17,7 +17,7 @@ from compare_results import compare_results
 
 UNKNOWN = "unknown"
 
-# Aggregate keys written by run_ledger_experiment.aggregate(), in display order.
+# Aggregate keys written by run_tier2_experiment.aggregate(), in display order.
 AGGREGATE_METRICS = (
     ("throughput", "Throughput", "req/s"),
     ("p50_ms", "p50 latency", "ms"),
@@ -45,6 +45,7 @@ td.unknown, .unknown { color: #6e6e73; font-style: italic; }
 .banner.valid { background: #e8f5e9; border-left: 4px solid #2e7d32; }
 .banner.diagnostic { background: #fff4e5; border-left: 4px solid #b26a00; }
 .banner ul { margin: 6px 0 0 18px; padding: 0; }
+figure { margin: 12px 0; } figure svg { max-width: 100%; height: auto; }
 code { font-size: 13px; word-break: break-all; }
 """
 
@@ -207,6 +208,180 @@ def identity_table(document: dict[str, Any]) -> str:
     return f"<table>{rows}</table>"
 
 
+CHART_WIDTH = 640
+CHART_HEIGHT = 240
+MARGIN_LEFT = 64
+MARGIN_RIGHT = 16
+MARGIN_TOP = 28
+MARGIN_BOTTOM = 40
+SERIES_COLOURS = ("#2f6fbf", "#c4572b", "#2e7d32", "#7b1fa2", "#00838f", "#8d6e00")
+
+
+def _plot_area() -> tuple[int, int, int, int]:
+    return MARGIN_LEFT, MARGIN_TOP, CHART_WIDTH - MARGIN_LEFT - MARGIN_RIGHT, CHART_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM
+
+
+def _scale_top(values: list[float]) -> float:
+    top = max(values) if values else 1.0
+    return top * 1.1 if top > 0 else 1.0
+
+
+def svg_bar_chart(
+    title: str,
+    labels: list[str],
+    values: list[float | None],
+    unit: str,
+    lows: list[float | None] | None = None,
+    highs: list[float | None] | None = None,
+) -> str:
+    """Vertical bars with optional confidence whiskers. A None value is drawn as the word
+    'unknown' at the baseline, never as a bar, so a missing measurement cannot look like zero."""
+    left, top, width, height = _plot_area()
+    measured = [value for value in values if value is not None]
+    extents = measured + [bound for bound in [*(lows or []), *(highs or [])] if bound is not None]
+    if not measured:
+        return f"<p class='unknown'>{html.escape(title)}: no measured values.</p>"
+    ceiling = _scale_top(extents)
+    slot = width / max(len(values), 1)
+    bar_width = slot * .6
+    parts = [
+        f'<svg viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}" width="100%" role="img" aria-label="{html.escape(title)}">',
+        f'<text x="{left}" y="16" font-size="13" font-weight="600">{html.escape(title)} ({html.escape(unit)})</text>',
+        f'<line x1="{left}" y1="{top + height}" x2="{left + width}" y2="{top + height}" stroke="#888"/>',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + height}" stroke="#888"/>',
+        f'<text x="{left - 6}" y="{top + 4}" font-size="11" text-anchor="end">{format_number(ceiling)}</text>',
+    ]
+    for index, (label, value) in enumerate(zip(labels, values)):
+        centre = left + slot * index + slot / 2
+        x = centre - bar_width / 2
+        if value is None:
+            parts.append(f'<text x="{centre}" y="{top + height - 6}" font-size="11" text-anchor="middle" fill="#6e6e73">unknown</text>')
+        else:
+            bar_height = height * value / ceiling
+            parts.append(f'<rect x="{x:.1f}" y="{top + height - bar_height:.1f}" width="{bar_width:.1f}" height="{bar_height:.1f}" fill="{SERIES_COLOURS[0]}"/>')
+            parts.append(f'<text x="{centre:.1f}" y="{top + height - bar_height - 4:.1f}" font-size="11" text-anchor="middle">{format_number(value)}</text>')
+            low = lows[index] if lows else None
+            high = highs[index] if highs else None
+            if low is not None and high is not None:
+                def y_of(item: float) -> float:
+                    return top + height - height * item / ceiling
+                parts.append(f'<line x1="{centre:.1f}" y1="{y_of(low):.1f}" x2="{centre:.1f}" y2="{y_of(high):.1f}" stroke="#222" stroke-width="1.5"/>')
+        parts.append(f'<text x="{centre:.1f}" y="{top + height + 16}" font-size="11" text-anchor="middle">{html.escape(label)}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def svg_line_chart(
+    title: str,
+    series: list[tuple[str, list[float | None]]],
+    unit: str,
+    x_label: str = "second",
+    marker_x: int | None = None,
+) -> str:
+    """One polyline per series. A None point breaks the line rather than dropping to zero.
+    `marker_x` draws a dashed line at the end of warm-up."""
+    left, top, width, height = _plot_area()
+    points = [value for _, values in series for value in values if value is not None]
+    if not points:
+        return f"<p class='unknown'>{html.escape(title)}: no measured values.</p>"
+    ceiling = _scale_top(points)
+    length = max((len(values) for _, values in series), default=1)
+    x_step = width / max(length - 1, 1)
+
+    def x_of(index: int) -> float:
+        return left + index * x_step
+
+    def y_of(value: float) -> float:
+        return top + height - height * value / ceiling
+
+    parts = [
+        f'<svg viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}" width="100%" role="img" aria-label="{html.escape(title)}">',
+        f'<text x="{left}" y="16" font-size="13" font-weight="600">{html.escape(title)} ({html.escape(unit)})</text>',
+        f'<line x1="{left}" y1="{top + height}" x2="{left + width}" y2="{top + height}" stroke="#888"/>',
+        f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + height}" stroke="#888"/>',
+        f'<text x="{left - 6}" y="{top + 4}" font-size="11" text-anchor="end">{format_number(ceiling)}</text>',
+        f'<text x="{left + width}" y="{top + height + 30}" font-size="11" text-anchor="end">{html.escape(x_label)}</text>',
+    ]
+    if marker_x is not None and 0 <= marker_x < length:
+        parts.append(f'<line x1="{x_of(marker_x):.1f}" y1="{top}" x2="{x_of(marker_x):.1f}" y2="{top + height}" stroke="#888" stroke-dasharray="4 3"/>')
+        parts.append(f'<text x="{x_of(marker_x) + 4:.1f}" y="{top + 12}" font-size="11" fill="#555">warm-up ends</text>')
+    for index, (name, values) in enumerate(series):
+        colour = SERIES_COLOURS[index % len(SERIES_COLOURS)]
+        run: list[str] = []
+        for position, value in enumerate(values):
+            if value is None:
+                _flush_run(parts, run, colour)
+                run = []
+            else:
+                run.append(f"{x_of(position):.1f},{y_of(value):.1f}")
+        _flush_run(parts, run, colour)
+        parts.append(f'<text x="{left + 8 + index * 110}" y="{CHART_HEIGHT - 6}" font-size="11" fill="{colour}">{html.escape(name)}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _flush_run(parts: list[str], run: list[str], colour: str) -> None:
+    if len(run) == 1:
+        x, y = run[0].split(",")
+        parts.append(f'<circle cx="{x}" cy="{y}" r="2.5" fill="{colour}"/>')
+    elif run:
+        parts.append(f'<polyline points="{" ".join(run)}" fill="none" stroke="{colour}" stroke-width="1.8"/>')
+
+
+def repetition_charts(document: dict[str, Any]) -> list[str]:
+    """Charts drawn from one result's repetitions: delivered throughput and p50 latency over
+    time, and per-repetition bars for throughput, GC pause and peak RSS."""
+    repetitions = [item for item in document.get("repetitions") or [] if isinstance(item, dict)]
+    if not repetitions:
+        return []
+    labels = [f"rep {item.get('repetition', index + 1)}" for index, item in enumerate(repetitions)]
+    charts: list[str] = []
+    first_load = dig(repetitions[0], "load") or {}
+    warmup = dig(first_load, "phases", "warmup_s")
+    completed = [(label, dig(item, "load", "series", "completed")) for label, item in zip(labels, repetitions)]
+    if all(values is not None for _, values in completed):
+        charts.append(svg_line_chart(
+            "Delivered throughput over time", completed, "req/s",
+            marker_x=warmup if isinstance(warmup, int) else None,
+        ))
+    p50 = [(label, dig(item, "load", "series", "p50_ms")) for label, item in zip(labels, repetitions)]
+    if all(values is not None for _, values in p50):
+        charts.append(svg_line_chart(
+            "p50 latency over time (by intended send second)", p50, "ms",
+            marker_x=warmup if isinstance(warmup, int) else None,
+        ))
+    charts.append(svg_bar_chart(
+        "Throughput per repetition", labels,
+        [dig(item, "load", "kpis", "throughput") for item in repetitions], "req/s",
+    ))
+    charts.append(svg_bar_chart(
+        "GC pause p99 per repetition", labels,
+        [dig(item, "telemetry", "gc", "p99_ms") for item in repetitions], "ms",
+    ))
+    charts.append(svg_bar_chart(
+        "Peak RSS per repetition", labels,
+        [_mebibytes(dig(item, "telemetry", "process", "rss_bytes_max")) for item in repetitions], "MiB",
+    ))
+    return charts
+
+
+def _mebibytes(value: Any) -> float | None:
+    return value / (1024 * 1024) if isinstance(value, (int, float)) else None
+
+
+def comparison_chart(entries: Sequence[tuple[str, dict[str, Any]]]) -> str:
+    """Throughput median with its 95 % interval, for measurement-valid results only."""
+    labels, values, lows, highs = [], [], [], []
+    for label, document in entries:
+        metric = dig(document, "aggregate", "throughput") or {}
+        valid = document.get("measurement_valid") is True
+        labels.append(label if valid else f"{label} (not comparable)")
+        values.append(metric.get("median") if valid else None)
+        interval = metric.get("bootstrap_mean_ci") or {}
+        lows.append(interval.get("low") if valid else None)
+        highs.append(interval.get("high") if valid else None)
+    return svg_bar_chart("Throughput median across runs", labels, values, "req/s", lows, highs)
+
 def document_section(label: str, document: dict[str, Any]) -> str:
     parts = [
         f"<h2>{html.escape(label)}</h2>",
@@ -220,6 +395,7 @@ def document_section(label: str, document: dict[str, Any]) -> str:
         parts += ["<h3>KPIs</h3>", kpi_table(document["kpis"])]
     if isinstance(document.get("repetitions"), list) and document["repetitions"]:
         parts += ["<h3>Repetitions</h3>", repetition_table(document["repetitions"])]
+        parts += [f"<figure>{chart}</figure>" for chart in repetition_charts(document)]
     parts += ["<h3>Environment</h3>", environment_table(document)]
     return "\n".join(parts)
 
@@ -271,6 +447,7 @@ def render_report(entries: Sequence[tuple[str, dict[str, Any]]]) -> str:
     sections = [document_section(label, document) for label, document in entries]
     if len(entries) > 1:
         sections.insert(0, comparison_table(entries))
+        sections.insert(1, f"<figure>{comparison_chart(entries)}</figure>")
     return (
         "<!doctype html><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"

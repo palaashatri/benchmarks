@@ -121,3 +121,48 @@ class ReportCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChartTests(unittest.TestCase):
+    def test_missing_bar_values_are_labelled_unknown_and_never_drawn(self):
+        svg = benchctl_report.svg_bar_chart("Peak RSS", ["rep 1", "rep 2", "rep 3"], [100.0, None, 120.0], "MiB")
+        self.assertEqual(2, svg.count("<rect"))
+        self.assertIn(">unknown</text>", svg)
+
+    def test_no_measured_values_produces_text_not_an_empty_chart(self):
+        svg = benchctl_report.svg_bar_chart("GC pause", ["rep 1"], [None], "ms")
+        self.assertNotIn("<svg", svg)
+        self.assertIn("no measured values", svg)
+
+    def test_line_breaks_at_missing_points_instead_of_dropping_to_zero(self):
+        svg = benchctl_report.svg_line_chart("p50", [("rep 1", [5.0, 6.0, None, 7.0, 8.0])], "ms")
+        # Two runs of two points each: the gap splits the line into two polylines and no
+        # point is plotted at zero.
+        self.assertEqual(2, svg.count("<polyline"))
+        self.assertEqual(0, svg.count("<circle"))
+
+    def test_warm_up_marker_is_drawn_at_the_warm_up_boundary(self):
+        svg = benchctl_report.svg_line_chart("throughput", [("rep 1", [20.0] * 6)], "req/s", marker_x=2)
+        self.assertIn("warm-up ends", svg)
+
+    def test_repetition_charts_come_from_the_recorded_series(self):
+        document = benchmark_result(1000.0)
+        document["repetitions"][0]["load"]["series"] = {
+            "completed": [20, 20, 20, 20], "p50_ms": [4.0, 4.1, 3.9, 4.0]
+        }
+        document["repetitions"][0]["load"]["phases"] = {"warmup_s": 1, "measure_s": 2}
+        charts = benchctl_report.repetition_charts(document)
+        self.assertTrue(any("Delivered throughput over time" in chart for chart in charts))
+        self.assertTrue(any("p50 latency over time" in chart for chart in charts))
+
+    def test_comparison_chart_refuses_to_plot_invalid_results(self):
+        svg = benchctl_report.comparison_chart([
+            ("baseline", benchmark_result(1000.0)),
+            ("smoke", benchmark_result(9999.0, valid=False)),
+        ])
+        self.assertIn("smoke (not comparable)", svg)
+        self.assertNotIn("9,999", svg)
+
+    def test_chart_titles_are_escaped(self):
+        svg = benchctl_report.svg_bar_chart("<b>x</b>", ["a"], [1.0], "ms")
+        self.assertNotIn("<b>x</b>", svg)
