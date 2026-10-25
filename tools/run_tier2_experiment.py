@@ -89,6 +89,7 @@ class Workload:
     build: list[str]
     classpath_file: str
     classpath_prefix: list[str]
+    jvm_options: list[str]
     min_jdk: int
     max_jdk: int
     tier: str
@@ -116,6 +117,7 @@ def load_workload(workload_id: str) -> Workload:
         build=spec["build"],
         classpath_file=spec["classpath_file"],
         classpath_prefix=spec.get("classpath_prefix", []),
+        jvm_options=[str(option) for option in spec.get("jvm_options", [])],
         min_jdk=int(entry["min_jdk"]),
         max_jdk=int(entry["max_jdk"]),
         tier=entry["tier"],
@@ -176,8 +178,8 @@ def validate_runtime(java_home: Path, collector: str, workload: Workload) -> dic
         raise ExperimentError("selected runtime does not support JFR")
     if not runtime["capabilities"].get("nmt"):
         raise ExperimentError("selected runtime does not support Native Memory Tracking")
-    if not runtime["capabilities"].get("unified_logging"):
-        raise ExperimentError("selected runtime does not support unified JVM logging")
+    if not (runtime["capabilities"].get("unified_logging") or runtime["capabilities"].get("legacy_gc_logging")):
+        raise ExperimentError("selected runtime supports neither unified nor legacy GC logging")
     return runtime
 
 
@@ -211,6 +213,19 @@ def build_classpath(workload: Workload, environment: dict[str, str], output: Pat
     if not entries and not prefix:
         raise ExperimentError(f"{workload.id} build produced an empty classpath")
     return os.pathsep.join([*prefix, *entries])
+
+
+def default_loadgen_java_home() -> Path:
+    """The load generator is compiled and run for release 21, so it needs a JDK 21 or newer. It runs beside the
+    measured JVM and never inside it, so the application's telemetry is unaffected."""
+    for java in sorted((benchctl.STATE_DIR / "jdks").glob("*/bin/java")):
+        try:
+            runtime = benchctl.probe_runtime(java)
+        except benchctl.BenchError:
+            continue
+        if runtime["feature_version"] >= 21:
+            return java.parent.parent
+    raise ExperimentError("the load generator needs a JDK 21 or newer; pass --loadgen-java-home")
 
 
 def build_loadgen(environment: dict[str, str], output: Path) -> None:
@@ -335,6 +350,16 @@ def parse_code_cache(text: str) -> dict[str, Any]:
     }
 
 
+# JDK 8 legacy GC logs have no "Using <collector>" line. Each collector names its own young-generation
+# space in every pause, so those labels identify the collector that the launched JVM actually ran.
+LEGACY_COLLECTOR_LABELS = (
+    (r"G1 Evacuation Pause", "g1"),
+    (r"\[DefNew", "serial"),
+    (r"\[PSYoungGen", "parallel"),
+    (r"\[ParNew", "cms"),
+)
+
+
 def actual_collector(gc_log: str) -> str | None:
     for pattern in (
         r"Using (Serial)",
@@ -357,6 +382,9 @@ def actual_collector(gc_log: str) -> str | None:
                 "epsilon": "epsilon",
                 "cms": "cms",
             }.get(value.lower(), value.lower())
+    for pattern, collector in LEGACY_COLLECTOR_LABELS:
+        if re.search(pattern, gc_log):
+            return collector
     return None
 
 
@@ -422,6 +450,7 @@ def run_repetition(
     seed: int,
     heap_mb: int,
     extra_jvm_arguments: list[str],
+    loadgen_environment: dict[str, str],
 ) -> dict[str, Any]:
     repetition_dir.mkdir(parents=True)
     telemetry_dir = repetition_dir / "telemetry"
@@ -448,13 +477,19 @@ def run_repetition(
         "-XX:+DebugNonSafepoints",
         "-XX:NativeMemoryTracking=summary",
         *runtime["collectors"][collector]["flags"],
+        *workload.jvm_options,
         (
             "-XX:StartFlightRecording="
             f"filename={recording},settings=profile,dumponexit=true,disk=true,maxsize=512m"
         ),
-        (
-            "-Xlog:gc*,safepoint,jit+compilation=info:"
-            f"file={gc_log}:time,uptime,level,tags"
+        # JDK 9+ unified logging; JDK 8 has only legacy GC logging, so safepoint and JIT logs are then absent.
+        *(
+            [
+                "-Xlog:gc*,safepoint,jit+compilation=info:"
+                f"file={gc_log}:time,uptime,level,tags"
+            ]
+            if runtime["capabilities"].get("unified_logging")
+            else ["-verbose:gc", "-XX:+PrintGCDetails", "-XX:+PrintGCDateStamps", f"-Xloggc:{gc_log}"]
         ),
         *extra_jvm_arguments,
     ]
@@ -522,7 +557,7 @@ def run_repetition(
                 str(histogram_output),
             ],
             cwd=ROOT,
-            env=environment,
+            env=loadgen_environment,
             timeout=warmup_seconds + measure_seconds + 120,
         )
         (repetition_dir / "loadgen.log").write_text(load.stdout + "\n" + load.stderr)
@@ -771,6 +806,8 @@ def outlier_report(repetitions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--java-home", required=True, type=Path)
+    value.add_argument("--loadgen-java-home", type=Path, default=None,
+                       help="JDK 21 or newer that builds and runs the load generator (default: first discovered)")
     value.add_argument(
         "--gc",
         default="g1",
@@ -833,7 +870,9 @@ def main(arguments: list[str] | None = None) -> int:
     if not args.skip_correctness:
         correctness_gate(workload, environment, output / "correctness.log")
     classpath = build_classpath(workload, environment, output / "build-workload.log")
-    build_loadgen(environment, output / "build-loadgen.log")
+    loadgen_home = args.loadgen_java_home or default_loadgen_java_home()
+    loadgen_environment = java_environment(loadgen_home)
+    build_loadgen(loadgen_environment, output / "build-loadgen.log")
 
     repetitions = []
     for repetition in range(1, args.repetitions + 1):
@@ -851,6 +890,7 @@ def main(arguments: list[str] | None = None) -> int:
             seed=args.seed,
             heap_mb=args.heap_mb,
             extra_jvm_arguments=args.jvm_arg,
+            loadgen_environment=loadgen_environment,
         )
         repetitions.append(result)
         print(

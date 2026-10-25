@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "run_kind": "calibration",
+  "gcs": [
+    "g1"
+  ],
+  "requests": 100,
+  "threads": 8,
+  "target_rate": 50,
+  "warmup_seconds": 5,
+  "measure_seconds": 10,
+  "heap_mb": 512,
+  "repetitions": 3,
+  "workloads": [
+    "00-runtime-compatibility"
+  ],
+  "runtimes": [
+    8,
+    11,
+    17,
+    21,
+    25
+  ]
+}

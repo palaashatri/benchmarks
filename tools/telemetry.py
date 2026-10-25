@@ -211,14 +211,19 @@ def collect_jstat(jstat: Path, pid: int, output_dir: Path) -> dict[str, Any]:
 def parse_gc_pauses(text: str) -> dict[str, Any]:
     values_ms: list[float] = []
     pattern = re.compile(r"\bPause\b.*?([0-9]+(?:\.[0-9]+)?)(ms|s)\b")
+    # JDK 8 legacy GC logs end each collection with its duration in seconds, for example "0.0012345 secs]".
+    legacy = re.compile(r"([0-9]+\.[0-9]+) secs\]")
     for line in text.splitlines():
         match = pattern.search(line)
-        if not match:
+        if match:
+            value = float(match.group(1))
+            if match.group(2) == "s":
+                value *= 1_000.0
+            values_ms.append(value)
             continue
-        value = float(match.group(1))
-        if match.group(2) == "s":
-            value *= 1_000.0
-        values_ms.append(value)
+        legacy_match = legacy.search(line)
+        if legacy_match:
+            values_ms.append(float(legacy_match.group(1)) * 1_000.0)
     return {
         "count": len(values_ms),
         "total_ms": sum(values_ms),

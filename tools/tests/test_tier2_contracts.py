@@ -60,6 +60,20 @@ class Tier2ContractTests(unittest.TestCase):
         self.assertEqual("tier-2", workload.tier)
         self.assertEqual("hft", workload.token_prefix)
 
+    def test_unified_logs_name_the_collector_from_the_using_line(self):
+        self.assertEqual("g1", runner.actual_collector("[0.01s][info][gc,init] Using G1\n"))
+        self.assertEqual("zgc", runner.actual_collector("[0.01s][info][gc,init] Using Z\n"))
+
+    def test_legacy_jdk8_logs_name_the_collector_from_its_pause_labels(self):
+        self.assertEqual("g1", runner.actual_collector(
+            "4.971: [GC pause (G1 Evacuation Pause) (young), 0.0074204 secs]\n"))
+        self.assertEqual("serial", runner.actual_collector("0.2: [GC [DefNew: 17K->2K(19K), 0.0003 secs]\n"))
+        self.assertEqual("parallel", runner.actual_collector("0.2: [GC [PSYoungGen: 17K->2K(19K)] 1K\n"))
+        self.assertEqual("cms", runner.actual_collector("0.2: [GC [ParNew: 17K->2K(19K), 0.0003 secs]\n"))
+
+    def test_a_log_without_a_collector_label_yields_none_not_a_guess(self):
+        self.assertIsNone(runner.actual_collector("CommandLine flags: -XX:+UseG1GC\n"))
+
 
 if __name__ == "__main__":
     unittest.main()

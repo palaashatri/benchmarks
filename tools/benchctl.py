@@ -165,6 +165,9 @@ def probe_runtime(java: Path) -> dict[str, Any]:
     java_home = Path(
         properties.get("java.home", str(java.resolve().parent.parent))
     ).expanduser().resolve()
+    # JDK 8 reports java.home as its jre directory; its tools live in the parent's bin.
+    if java_home.name == "jre" and (java_home.parent / "bin").is_dir():
+        java_home = java_home.parent
     identity = file_identity(java.resolve())
 
     collectors: dict[str, dict[str, Any]] = {
