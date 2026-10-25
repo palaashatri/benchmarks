@@ -62,6 +62,7 @@ The old committed results were removed because they mixed smoke traffic with har
 
 - Workloads use three build paths: Gradle Kotlin DSL (01–08), Maven (09–13) and `run.sh` scripts that compile with raw `javac`. None has a wrapper; adding one is open work.
 - The `run.sh` downloads (01, 05, `tools/loadgen`) are SHA-256 pinned. Gradle (01–08) and Maven (09–13) resolve through their own tooling and have no checksum verification metadata yet.
+- `gradle test` for 01–08 has no test sources, so it passes without checking anything. Their correctness checks run through `run.sh test`; a Gradle-native test lane is open work.
 - Maven Central through the development proxy intermittently returns 404 or 429 for artifacts that exist. Retries (`curl --retry`, Gradle `--refresh-dependencies`, `mvn -U`) absorb most of it; a full clean build can still need a second attempt.
 
 ## Product roadmap
