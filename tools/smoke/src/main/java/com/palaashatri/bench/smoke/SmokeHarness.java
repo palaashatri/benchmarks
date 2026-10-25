@@ -91,8 +91,14 @@ public final class SmokeHarness {
         if (ok.get() != total) throw new IOException("only " + ok.get() + " of " + total + " smoke requests succeeded");
     }
 
+    /**
+     * Covers the queue as well as the request. Concurrent requests to an application that serialises its work (a
+     * cold-start measurement waits for the child JVMs ahead of it) must not fail because they waited their turn.
+     */
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+
     private static HttpResponse<String> send(HttpClient client, String base, Request operation) throws IOException, InterruptedException {
-        var request = HttpRequest.newBuilder(URI.create(base + operation.path())).timeout(Duration.ofSeconds(5));
+        var request = HttpRequest.newBuilder(URI.create(base + operation.path())).timeout(REQUEST_TIMEOUT);
         if (operation.body() == null) request.GET();
         else request.header("Content-Type", "application/json").method(operation.method(), HttpRequest.BodyPublishers.ofString(operation.body()));
         return client.send(request.build(), HttpResponse.BodyHandlers.ofString());
