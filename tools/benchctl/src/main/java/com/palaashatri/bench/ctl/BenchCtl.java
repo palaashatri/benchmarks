@@ -63,7 +63,7 @@ public final class BenchCtl {
               resume <run-id>                re-run the experiment stored under results/<run-id>
               report <path> ... [-o <file>]  render result envelopes as a readable HTML report
               verify-results <path>          check a result envelope's structure
-              lane startup|jobs ...          run the startup (07) or jobs (08) measurement lane
+              lane startup|jobs|chat ...     run the startup (07), jobs (08) or chat (06) lane with its gates
               tier2 --java-home <jdk> --out <dir> [options]
                                              measure one workload with the Tier 2 engine
             """;
@@ -277,13 +277,35 @@ public final class BenchCtl {
         } catch (IOException exception) {
             throw new BenchError("cannot create a lane directory: " + exception.getMessage(), exception);
         }
+        String runKind = flags.getOrDefault("--run-kind", "calibration");
+        if (!runKind.equals("calibration") && !runKind.equals("benchmark")) {
+            throw new BenchError("--run-kind must be calibration or benchmark");
+        }
+        int repetitions = Integer.parseInt(flags.getOrDefault("--repetitions", "5"));
         Map<String, Object> result = switch (arguments[0]) {
             case "startup" -> Lanes.startup(javaExecutable, classpath,
-                    Integer.parseInt(flags.getOrDefault("--samples", "10")), temporary);
+                    Integer.parseInt(flags.getOrDefault("--samples", "10")), repetitions, runKind,
+                    tierOf("07-coldstart-suite"), temporary, repo);
             case "jobs" -> Lanes.jobs(javaExecutable, classpath,
                     Integer.parseInt(flags.getOrDefault("--jobs", "10")),
+                    Double.parseDouble(flags.getOrDefault("--rate", "1")),
                     Integer.parseInt(flags.getOrDefault("--concurrency", "1")),
-                    Integer.parseInt(flags.getOrDefault("--job-timeout", "300")), temporary);
+                    Integer.parseInt(flags.getOrDefault("--job-timeout", "300")), repetitions, runKind,
+                    tierOf("08-etl-batch"), temporary, repo);
+            case "chat" -> {
+                String driver = flags.get("--driver-classpath");
+                if (driver == null) {
+                    throw new BenchError("the chat lane needs --driver-classpath (the harness classes)");
+                }
+                yield Lanes.chat(javaExecutable, driver, classpath,
+                        new Lanes.ChatSettings(Integer.parseInt(flags.getOrDefault("--subscribers", "200")),
+                                Integer.parseInt(flags.getOrDefault("--rooms", "8")),
+                                Integer.parseInt(flags.getOrDefault("--publishers", "8")),
+                                Double.parseDouble(flags.getOrDefault("--rate", "500")),
+                                Double.parseDouble(flags.getOrDefault("--warmup-seconds", "3")),
+                                Double.parseDouble(flags.getOrDefault("--measure-seconds", "10"))),
+                        repetitions, runKind, tierOf("06-massive-chat-loom"), temporary, repo);
+            }
             default -> throw new BenchError("unknown lane: " + arguments[0]);
         };
         try {
@@ -295,6 +317,13 @@ public final class BenchCtl {
         }
         out.println("wrote " + flags.get("--out"));
         return 0;
+    }
+
+    /** The catalogued tier of a workload. Lanes take it from the catalogue, never from their own code. */
+    private String tierOf(String workload) {
+        return repo.catalog().stream().filter(item -> workload.equals(item.get("id"))).findFirst()
+                .map(item -> String.valueOf(item.get("tier")))
+                .orElseThrow(() -> new BenchError(workload + " is not in benchmarks/catalog.json"));
     }
 
     private Map<String, Object> resultAt(String path) {
