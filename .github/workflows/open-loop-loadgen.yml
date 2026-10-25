@@ -25,5 +25,12 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
+      - name: Diagnose the Maven wrapper checksum on macOS
+        if: runner.os == 'macOS'
+        run: |
+          curl -fL -o "$RUNNER_TEMP/mvn.zip" https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.zip
+          ls -l "$RUNNER_TEMP/mvn.zip"
+          shasum -a 256 "$RUNNER_TEMP/mvn.zip"
+          command -v sha256sum shasum wget curl unzip || true
       - name: Compile and self-test the coordinated-omission-safe HdrHistogram generator
         run: sh ./mvnw -B -f tools/loadgen/pom.xml test
