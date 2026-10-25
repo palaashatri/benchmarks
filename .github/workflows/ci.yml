@@ -89,7 +89,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          # The hosted macOS image currently offers no Temurin JDK 8, so that one cell takes Zulu.
+          distribution: ${{ matrix.os == 'macos-latest' && matrix.java == '8' && 'zulu' || 'temurin' }}
           java-version: ${{ matrix.java }}
       - name: Application correctness gates
         run: cd benchmarks/00-runtime-compatibility/app && sh ./mvnw -B test
