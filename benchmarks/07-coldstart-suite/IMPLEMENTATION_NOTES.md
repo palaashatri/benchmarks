@@ -18,7 +18,7 @@ The stub server was replaced with a startup-measurement server that:
     `jvm_compilation_ms_total`, `benchmark_requests_total`, `jvm_loaded_classes`,
     `jvm_available_processors`.
   - `GET /api/v1/jfr/stats` — JSON with CompilationMXBean and ClassLoadingMXBean data.
-  - `GET /api/v1/coldstart/measure` — spawns a child JVM via `ProcessBuilder` on port 18070,
+  - `POST /api/v1/coldstart/measure` — spawns a child JVM via `ProcessBuilder` on port 18070,
     polls `http://localhost:18070/health` every 100ms for up to 10s, measures time-to-first-response,
     then `destroyForcibly()` in `finally` block. Returns `{"time_to_first_response_ms":-1,"error":"timeout"}`
     on timeout, or `{"time_to_first_response_ms":N}` on success.
@@ -30,7 +30,7 @@ The stub server was replaced with a startup-measurement server that:
 Key changes from the stub:
 
 - Weighted `REQUESTS` array: GET /health x4, GET /api/v1/jfr/stats x3, GET /metrics x2,
-  GET /api/v1/coldstart/measure x1.
+  POST /api/v1/coldstart/measure x1.
 - Concurrent execution via `Executors.newFixedThreadPool(threads)` + `CountDownLatch`.
 - `--threads` (default 8) and `--runs` (default 3) CLI args.
 - Wall-clock throughput: `requestCount / wallElapsedSeconds` (not sum of latencies).
@@ -98,5 +98,5 @@ PASS. Running `REQUESTS=20 ./run.sh test` from the harness directory produces:
   BenchmarkApp.java callsites were updated accordingly.
 - `HttpTimeoutException` is a subclass of `IOException`, so the multi-catch was collapsed
   to a single `IOException` catch to satisfy `javac --release 21`.
-- The `/api/v1/coldstart/measure` endpoint always returns HTTP 200 (even on timeout/error),
+- The `/api/v1/coldstart/measure` endpoint returns HTTP 200 with `time_to_health_ms` when the child JVM reports ready, and HTTP 500 with `child_start_failed` otherwise;
   consistent with the circuit breaker not needing to trip on schema-valid error responses.

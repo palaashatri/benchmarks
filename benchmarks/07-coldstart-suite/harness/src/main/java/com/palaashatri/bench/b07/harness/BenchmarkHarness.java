@@ -15,7 +15,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -28,7 +27,7 @@ public final class BenchmarkHarness {
             "\"time_to_first_response_ms\":0,\"time_to_90pct_s\":0,\"compiled_methods\":0";
 
     // Weighted request array:
-    // GET /health x4, GET /api/v1/jfr/stats x3, GET /metrics x2, GET /api/v1/coldstart/measure x1
+    // GET /health x4, GET /api/v1/jfr/stats x3, GET /metrics x2, POST /api/v1/coldstart/measure x1 (per app/contract)
     private static final RequestSpec[] REQUESTS = new RequestSpec[]{
             new RequestSpec("GET", "/health"),
             new RequestSpec("GET", "/health"),
@@ -39,7 +38,7 @@ public final class BenchmarkHarness {
             new RequestSpec("GET", "/api/v1/jfr/stats"),
             new RequestSpec("GET", "/metrics"),
             new RequestSpec("GET", "/metrics"),
-            new RequestSpec("GET", "/api/v1/coldstart/measure"),
+            new RequestSpec("POST", "/api/v1/coldstart/measure"),
     };
 
     // Circuit breaker state for /api/v1/coldstart/measure
@@ -57,37 +56,34 @@ public final class BenchmarkHarness {
         int runs = Integer.parseInt(opts.getOrDefault("runs", "3"));
         String baseUrl = opts.getOrDefault("base-url",
                 System.getenv().getOrDefault("BASE_URL", "http://localhost:8080"));
-        long seed = Long.parseLong(opts.getOrDefault("seed", "424242"));
-
         BenchmarkHarness harness = new BenchmarkHarness();
-        Result best = null;
+        Result result = null;
         for (int run = 0; run < runs; run++) {
-            Result r = harness.run(baseUrl, profile, requestCount, threads, seed + run);
+            Result r = harness.run(baseUrl, profile, requestCount, threads);
             System.out.printf("Run %d/%d: throughput=%.2f rps, ok=%d/%d, p99=%dms%n",
                     run + 1, runs, r.throughput(), r.ok(), r.requests(), r.p99());
-            if (best == null || r.ok() > best.ok()) best = r;
+            // Every run must be clean; a failure in any run fails the whole harness.
+            if (r.ok() != r.requests()) {
+                throw new IllegalStateException("run " + (run + 1) + ": only " + r.ok() + " of " + r.requests()
+                        + " benchmark requests succeeded against " + baseUrl);
+            }
+            result = r;
         }
 
-        if (best == null) throw new IllegalStateException("no runs completed");
-        if (best.ok() != best.requests()) {
-            throw new IllegalStateException("only " + best.ok() + " of " + best.requests()
-                    + " benchmark requests succeeded against " + baseUrl);
-        }
+        if (result == null) throw new IllegalStateException("no runs completed");
 
         Path out = Path.of(opts.getOrDefault("out", "results/results.json"));
         if (out.getParent() != null) Files.createDirectories(out.getParent());
-        Files.writeString(out, best.toJson() + System.lineSeparator());
-        System.out.println(best.toJson());
+        Files.writeString(out, result.toJson() + System.lineSeparator());
+        System.out.println(result.toJson());
     }
 
-    Result run(String baseUrl, String profile, int requestCount, int threads, long seed)
+    Result run(String baseUrl, String profile, int requestCount, int threads)
             throws InterruptedException {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(3))
                 .executor(Executors.newVirtualThreadPerTaskExecutor())
                 .build();
-        Random random = new Random(seed ^ profile.hashCode());
-
         long[] latenciesMs = new long[Math.max(1, requestCount)];
         AtomicInteger okCount = new AtomicInteger(0);
         AtomicLong failCount = new AtomicLong(0);
@@ -99,14 +95,20 @@ public final class BenchmarkHarness {
 
         for (int i = 0; i < requestCount; i++) {
             final int idx = i;
-            final int specIdx = Math.floorMod(idx + random.nextInt(REQUESTS.length), REQUESTS.length);
             pool.submit(() -> {
                 try {
-                    RequestSpec spec = chooseSpec(specIdx);
+                    // Requests take the table in order, so any run of REQUESTS.length or more reaches every route.
+                    RequestSpec spec = chooseSpec(idx);
                     Duration timeout = spec.path().contains("coldstart") ? Duration.ofSeconds(15) : Duration.ofSeconds(5);
                     HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl + spec.path()))
-                            .timeout(timeout)
-                            .GET();
+                            .timeout(timeout);
+                    // Send the method the request table declares; the app rejects other methods with 405.
+                    if ("POST".equals(spec.method())) {
+                        builder.header("Content-Type", "application/json")
+                                .POST(HttpRequest.BodyPublishers.ofString("{}"));
+                    } else {
+                        builder.GET();
+                    }
                     long start = System.nanoTime();
                     try {
                         HttpResponse<String> res = client.send(builder.build(), HttpResponse.BodyHandlers.ofString());

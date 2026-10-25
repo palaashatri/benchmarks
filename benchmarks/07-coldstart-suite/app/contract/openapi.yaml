@@ -3,6 +3,19 @@ info:
   title: Coldstart Function Suite contract
   version: 0.2.0
 paths:
+  /runtime:
+    get:
+      responses:
+        '200': {description: pid, run token, Java version and VM name}
+  /api/v1/jfr/stats:
+    get:
+      responses:
+        '200': {description: JFR and startup timing statistics}
+  /api/v1/coldstart/measure:
+    post:
+      responses:
+        '200': {description: process-to-health time of a child JVM}
+        '500': {description: the child JVM did not report ready}
   /health:
     get:
       responses:
@@ -11,19 +24,3 @@ paths:
     get:
       responses:
         '200': {description: prometheus metrics}
-  /actuator/health:
-    get:
-      responses:
-        '200': {description: actuator health}
-  /actuator/prometheus:
-    get:
-      responses:
-        '200': {description: actuator prometheus metrics}
-  /functions:
-    get:
-      responses:
-        '200': {description: List local functions}
-  /invoke/{function}:
-    post:
-      responses:
-        '200': {description: Invoke a function}
