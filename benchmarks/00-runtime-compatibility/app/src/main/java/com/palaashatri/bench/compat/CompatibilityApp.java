@@ -36,8 +36,10 @@ public final class CompatibilityApp {
         server.createContext("/work", this::work);
         server.setExecutor(Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors())));
         server.start();
+        int bound = server.getAddress().getPort();
+        publishPort(bound);
         System.out.println("{\"event\":\"started\",\"benchmark\":\"00-runtime-compatibility\",\"port\":"
-                + port + ",\"pid\":" + pid() + "}");
+                + bound + ",\"pid\":" + pid() + "}");
     }
 
     private void health(HttpExchange exchange) throws IOException {
@@ -50,6 +52,8 @@ public final class CompatibilityApp {
                 + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
                 + ",\"java_vendor\":\"" + escape(System.getProperty("java.vendor")) + "\""
                 + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\""
+                + ",\"jvm_args\":" + stringArray(ManagementFactory.getRuntimeMXBean().getInputArguments())
+                + ",\"collectors\":" + collectorNames()
                 + ",\"bytecode_target\":8}");
     }
 
@@ -120,6 +124,21 @@ public final class CompatibilityApp {
         while (end < text.length() && (Character.isDigit(text.charAt(end)) || text.charAt(end) == '-')) end++;
         try { return Long.parseLong(text.substring(start, end)); } catch (RuntimeException ignored) { return fallback; }
     }
+    /** Publishes the bound port for the test and harness owners, as the shared children do. Java 8 safe. */
+    private static void publishPort(int port) throws IOException {
+        String name = System.getenv("BENCH_PORT_FILE");
+        if (name == null || name.isEmpty()) return;
+        java.nio.file.Path target = java.nio.file.Paths.get(name);
+        java.nio.file.Path temporary = target.resolveSibling(target.getFileName() + "." + java.util.UUID.randomUUID() + ".tmp");
+        try {
+            java.nio.file.Files.write(temporary, Integer.toString(port).getBytes(StandardCharsets.UTF_8));
+            java.nio.file.Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            java.nio.file.Files.deleteIfExists(temporary);
+        }
+    }
+    private static String stringArray(java.util.List<String> values) { StringBuilder out = new StringBuilder("["); for (int i = 0; i < values.size(); i++) { if (i > 0) out.append(','); out.append('"').append(escape(values.get(i))).append('"'); } return out.append(']').toString(); }
+    private static String collectorNames() { java.util.List<String> names = new java.util.ArrayList<String>(); for (java.lang.management.GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) names.add(bean.getName()); return stringArray(names); }
     private static String environment(String name) { String value = System.getenv(name); return value == null ? "" : value; }
     private static long pid() { try { return Long.parseLong(ManagementFactory.getRuntimeMXBean().getName().split("@")[0]); } catch (RuntimeException ignored) { return -1; } }
     private static String hex(byte[] bytes) { StringBuilder out = new StringBuilder(bytes.length * 2); for (byte value : bytes) out.append(String.format(java.util.Locale.ROOT, "%02x", value & 255)); return out.toString(); }

@@ -9,11 +9,14 @@ SOURCES="build/sources.txt"
 compile() {
   mkdir -p "$CLASSES"
   find src/main/java -name '*.java' -print | sort > "$SOURCES"
-  version="$(javac -version 2>&1)"
-  case "$version" in
-    javac\ 1.8*) javac -source 8 -target 8 -Xlint:-options -d "$CLASSES" @"$SOURCES" ;;
-    *) javac --release 8 -d "$CLASSES" @"$SOURCES" ;;
-  esac
+  # JAVA_TOOL_OPTIONS can print a line before the version, so match the version line itself.
+  # JDK 8's javac has no --release flag; there the JDK 8 bootclasspath already enforces the API.
+  if javac -version 2>&1 | grep -q '^javac 1\.8\.'; then
+    javac -source 8 -target 8 -Xlint:-options -d "$CLASSES" @"$SOURCES"
+  else
+    javac --release 8 -d "$CLASSES" @"$SOURCES"
+  fi
+  printf '%s' "$CLASSES" > build/classpath.txt
 }
 
 build_artifact() {
