@@ -93,6 +93,8 @@ jobs:
           java-version: ${{ matrix.java }}
       - name: Application correctness gates
         run: cd benchmarks/00-runtime-compatibility/app && sh ./mvnw -B test
+      - name: Package the application for the harness gates
+        run: cd benchmarks/00-runtime-compatibility/app && sh ./mvnw -B -q -DskipTests package
       - name: Harness correctness gates
         run: cd benchmarks/00-runtime-compatibility/harness && sh ./mvnw -B test
 
@@ -130,6 +132,8 @@ jobs:
       # `mvn test` runs the workload's correctness gates; the harness gates run after the application's.
       - name: Application correctness gates
         run: cd "benchmarks/${{ matrix.workload }}/app" && sh ./mvnw -B test
+      - name: Package the application for the harness gates
+        run: cd "benchmarks/${{ matrix.workload }}/app" && sh ./mvnw -B -q -DskipTests package
       - name: Harness correctness gates
         run: cd "benchmarks/${{ matrix.workload }}/harness" && sh ./mvnw -B test
 
@@ -156,5 +160,7 @@ jobs:
           java-version: '17'
       - name: Application correctness gates
         run: cd "benchmarks/${{ matrix.workload }}/app" && sh ./mvnw -B test
+      - name: Package the application for the harness gates
+        run: cd "benchmarks/${{ matrix.workload }}/app" && sh ./mvnw -B -q -DskipTests package
       - name: Harness correctness gates
         run: cd "benchmarks/${{ matrix.workload }}/harness" && sh ./mvnw -B test
