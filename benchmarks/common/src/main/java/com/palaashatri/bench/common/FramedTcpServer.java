@@ -137,12 +137,13 @@ public final class FramedTcpServer implements AutoCloseable {
             catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             finally { close(); }
         }
+        /** Run the handler's cleanup before the socket ends, so a peer that sees EOF finds the cleanup already done. */
         @Override public void close() {
             if (!ended.compareAndSet(false, true)) return;
             sessions.remove(this);
-            try { socket.close(); } catch (IOException ignored) { }
             outbound.clear(); outbound.offer(END);
-            handler.onClose(this);
+            try { handler.onClose(this); }
+            finally { try { socket.close(); } catch (IOException ignored) { } }
         }
     }
     @Override public void close() {

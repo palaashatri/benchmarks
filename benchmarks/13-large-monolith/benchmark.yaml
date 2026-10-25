@@ -1,13 +1,14 @@
 {
   "schema_version":"1.0.0",
   "id":"13-large-monolith",
-  "tier":"tier-0",
+  "tier":"tier-2",
   "lane":"feature",
   "min_jdk":17,
   "max_jdk":25,
-  "implementation":"500 distinct generated proxy classes and deterministic component traversal",
+  "implementation":"1,000 generated components (20 modules of 50) wired by a reflective constructor-injection container and traversed once per request",
+  "generated_components":1000,
   "measurement_valid":false,
-  "invalid_reasons":["not a real dependency-injection monolith","no persistence mappings or restart distribution"],
-  "correctness_command":"cd app && ./run.sh test",
-  "operations":["GET /api/v1/monolith/work","GET /api/v1/monolith/warmup/status"]
+  "invalid_reasons":["synthetic container, not a production dependency-injection framework; no persistence, transactions or framework startup work","no restart distribution"],
+  "correctness_command":"cd app && ./mvnw -B test",
+  "operations":["GET /api/v1/monolith/work","GET /api/v1/monolith/graph","GET /api/v1/monolith/warmup/status"]
 }

@@ -4,10 +4,10 @@
     {
       "id": "00-runtime-compatibility",
       "path": "benchmarks/00-runtime-compatibility",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 8,
       "max_jdk": 25,
-      "status": "one hashed Java 8 artifact reused across runtime smoke runs"
+      "status": "Java 8 bytecode compression, sorting and hashing per request, driven through the Tier 2 engine on each JDK 8-25 runtime; no GC comparison; no measurement-valid results yet"
     },
     {
       "id": "01-fintech-ledger",
@@ -20,34 +20,34 @@
     {
       "id": "02-microservices-mesh",
       "path": "benchmarks/02-microservices-mesh",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "gateway JVM making HTTP calls to independent account, transaction and notification JVMs; functional Tier 1 prototype"
+      "status": "gateway JVM calling independent account, transaction and notification JVMs; Tier 2 engine measures the gateway process only (child JVMs are not profiled); no measurement-valid results yet"
     },
     {
       "id": "03-streaming-analytics",
       "path": "benchmarks/03-streaming-analytics",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "in-memory queue/window prototype"
+      "status": "in-memory event-time windows and consumer lag driven through the Tier 2 engine; no durable state or broker; no measurement-valid results yet"
     },
     {
       "id": "04-ml-inference-panama-vector",
       "path": "benchmarks/04-ml-inference-panama-vector",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 21,
-      "status": "JDK 21 preview Vector/FFM prototype"
+      "status": "JDK 21 Vector API and FFM inference driven through the Tier 2 engine with the preview flags declared in its contract; no measurement-valid results yet"
     },
     {
       "id": "05-polyglot-service",
       "path": "benchmarks/05-polyglot-service",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "Rhino dynamic-language prototype"
+      "status": "sandboxed Rhino scoring driven through the Tier 2 engine; declared not a cross-JDK feature lane; no measurement-valid results yet"
     },
     {
       "id": "06-massive-chat-loom",
@@ -55,7 +55,7 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "virtual-thread persistent TCP room subscriptions and socket fan-out with HTTP control plane; functional Tier 1 prototype"
+      "status": "persistent TCP chat with HTTP publish; measured by a dedicated open-loop chat driver with client-side delivery latency and conservation checks; no measurement-valid results yet"
     },
     {
       "id": "07-coldstart-suite",
@@ -63,7 +63,7 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "isolated process-to-health prototype without CDS matrix"
+      "status": "child-JVM process-to-health under default CDS, CDS off and AppCDS, measured by a startup lane that takes the application's own per-start times; no measurement-valid results yet"
     },
     {
       "id": "08-etl-batch",
@@ -71,47 +71,47 @@
       "tier": "tier-1",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "local NIO ETL prototype"
+      "status": "local ETL jobs whose output digest is checked against an in-memory reference; measured by a job lane that submits jobs and reads the application's own timings; no measurement-valid results yet"
     },
     {
       "id": "09-onnx-inference",
       "path": "benchmarks/09-onnx-inference",
-      "tier": "tier-0",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "truthful Java fallback only; ONNX session not implemented"
+      "status": "seeded classifier as an ONNX graph run by a live ONNX Runtime 1.18.0 session (Maven lane, checked against a Java reference); Tier 2 measurement engine with application-process telemetry, open-loop load and warm-up gating; no measurement-valid results yet"
     },
     {
       "id": "10-microservices-fleet",
       "path": "benchmarks/10-microservices-fleet",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "five replica JVMs with readiness-gated generation replacement; functional Tier 1 prototype"
+      "status": "gateway over five replica JVMs; Tier 2 engine measures the gateway process only (replica JVMs are not profiled); no measurement-valid results yet"
     },
     {
       "id": "11-autoscaling-burst",
       "path": "benchmarks/11-autoscaling-burst",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "bounded admission and queued work dispatched to one to four independently ready worker JVMs; functional Tier 1 prototype"
+      "status": "bounded gateway admission over worker JVMs; Tier 2 engine measures the gateway process only (worker JVMs are not profiled); admission rejections are counted as errors; no measurement-valid results yet"
     },
     {
       "id": "12-hft-trading-gateway",
       "path": "benchmarks/12-hft-trading-gateway",
-      "tier": "tier-1",
+      "tier": "tier-2",
       "min_jdk": 21,
       "max_jdk": 25,
-      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP and persistent framed TCP; functional Tier 1 prototype"
+      "status": "symbol-isolated FIFO matching engine with partial fills shared by HTTP, persistent framed TCP and a grpc-java listener; Tier 2 measurement engine with application-process telemetry, open-loop load and warm-up gating; no measurement-valid results yet"
     },
     {
       "id": "13-large-monolith",
       "path": "benchmarks/13-large-monolith",
-      "tier": "tier-0",
+      "tier": "tier-2",
       "min_jdk": 17,
       "max_jdk": 25,
-      "status": "500 generated proxy classes; still not an enterprise monolith"
+      "status": "1,000 generated components wired by a reflective constructor-injection container and traversed per request, checked against a Python model of the graph; Tier 2 measurement engine with application-process telemetry; synthetic container, not a production framework; no measurement-valid results yet"
     }
   ]
 }

@@ -1,5 +1,8 @@
 package com.palaashatri.bench.b04.app;
 
+import com.palaashatri.bench.common.Json;
+import com.palaashatri.bench.common.RuntimeInfo;
+
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -61,23 +64,29 @@ public final class MiniHttpServer {
     // -----------------------------------------------------------------------
 
     public void start(int port) throws IOException {
-        HttpServer server = HttpServer.create(new InetSocketAddress(port), 256);
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 256);
         server.createContext("/api/v1/inference/scalar", this::inferenceScalar);
         server.createContext("/api/v1/inference", this::inferenceSimd);
         server.createContext("/api/v1/health",   this::health);
+        server.createContext("/runtime",           this::runtime);
         server.createContext("/health",            this::health);
         server.createContext("/actuator/health",   this::health);
         server.createContext("/metrics",           this::metrics);
         server.createContext("/actuator/prometheus", this::metrics);
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
-        log("started", "\"port\":" + port + ",\"simd_width\":" + SPECIES.length()
+        RuntimeInfo.publishPort(server.getAddress().getPort());
+        log("started", "\"port\":" + server.getAddress().getPort() + ",\"simd_width\":" + SPECIES.length()
                 + ",\"species\":\"" + SPECIES + "\"");
     }
 
     // -----------------------------------------------------------------------
     // Handlers
     // -----------------------------------------------------------------------
+
+    private void runtime(HttpExchange ex) throws IOException {
+        Json.bytes(ex, 200, "application/json", RuntimeInfo.json());
+    }
 
     private void health(HttpExchange ex) throws IOException {
         json(ex, 200, "{\"status\":\"UP\",\"simd_width\":" + SPECIES.length()

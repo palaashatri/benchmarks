@@ -1,57 +1,63 @@
 # AGENTS.md — OpenJDK benchmark suite
 
-An OpenJDK HotSpot production-workload and regression suite for JDK 8–25: 13 production-shaped workloads plus a Java 8-bytecode compatibility workload, driven by a dependency-free Python controller (`benchctl`) that discovers JDKs, probes collectors/capabilities, plans valid combinations, runs experiments and refuses invalid comparisons.
+An OpenJDK HotSpot production-workload and regression suite for JDK 8–25: 13 production-shaped workloads plus a Java 8-bytecode compatibility workload, driven by a Java 17+ controller (`tools/benchctl`) that discovers JDKs, probes collectors/capabilities, plans valid combinations, runs experiments and refuses invalid comparisons. The controller and every workload run the same way on Linux, Windows and macOS.
 
 Detailed per-workload state: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md). Measurement method and validity gates: [`METHODOLOGY.md`](METHODOLOGY.md). Each workload's `IMPLEMENTATION_NOTES.md` explains its design and limits.
 
-## Current state (2026-10-20)
+## Current state (2026-10-25)
 
-- `01-fintech-ledger` is the only **Tier 2** (measurement-ready) workload. Everything else is Tier 0/1: correctness and contract smoke tests, not benchmark numbers.
+- `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range. Tier 2 (measurement-ready in code): `00`–`05`, `09`–`13`. Tier 1: `06`, `07`, `08`.
+- `02`, `10` and `11` are Tier 2 with process-tree telemetry: the gateway and every child JVM it starts are sampled, logged and captured. Each child writes its own native memory summary and flight recording as it exits, and each reported child must be observed (see `IMPLEMENTATION_STATUS.md`).
 - There are **no** measurement-valid published results. Do not add any until a run on controlled hardware passes every validity gate.
-- `benchmarks/catalog.json` is the source of truth for each workload's tier and JDK range.
 
 ## Scope boundary
 
-Public repository, **OpenJDK HotSpot only**. Do not add proprietary JVMs or collectors, vendor-private compiler services, confidential features, customer systems or private performance results, and no speculative SPIs for them. `tools/check_repository.py` enforces part of this.
+Public repository, **OpenJDK HotSpot only**. Do not add proprietary JVMs or collectors, vendor-private compiler services, confidential features, customer systems or private performance results, and no speculative SPIs for them. `./benchctl hygiene` enforces part of this.
 
 ## Commands
 
-Controller (Python 3.12, standard library only):
+Controller (Java 17 or newer; the Maven wrapper is the only other tool):
 
 ```bash
-python3 -m unittest discover -s tools/tests -v
-python3 tools/check_repository.py                # repository hygiene and scope gate
-./benchctl validate experiments/quick.yaml       # also standard.yaml, gc-focused.yaml, ledger-benchmark.yaml
-./benchctl doctor && ./benchctl discover-runtimes && ./benchctl list-runtimes
-./benchctl plan experiments/ledger-benchmark.yaml
-./benchctl run experiments/ledger-benchmark.yaml # real Tier 2 run; needs a quiet machine to mean anything
+./benchctl hygiene                               # repository hygiene and scope gate (Windows: benchctl.cmd hygiene)
+./benchctl doctor                                # controller, repository and wrapper checks
+./benchctl validate experiments/quick.yaml       # also every other manifest in experiments/
+./benchctl discover-runtimes && ./benchctl list-runtimes && ./benchctl list-capabilities
+./benchctl fetch-jdks --feature 17 --feature 21  # Adoptium builds, SHA-256 checked, into .benchctl/jdks
+./benchctl preflight                             # quiet-machine checks; a Tier 2 run is invalid if these fail
+./benchctl plan experiments/tier2-matrix.yaml    # the 11-workload Tier 2 matrix, platform-neutral
+./benchctl run experiments/tier2-matrix.yaml     # real Tier 2 runs; needs a quiet machine to mean anything
+./benchctl report results/<run-id>               # readable HTML report
+./benchctl lane startup|jobs|chat ...            # the 07, 08 and 06 lanes, with five repetitions and the shared gates
+./mvnw -B -f tools/benchctl/pom.xml test         # controller unit tests
 ```
 
-Workloads (each `app/` and `harness/` is an independent project):
+Workloads and shared modules (each `app/` and `harness/` is an independent Maven project with its own wrapper, Maven 3.9.11, distribution SHA-256 pinned):
 
 ```bash
-(cd benchmarks/<NN-name>/app && ./run.sh test)      # correctness/contract smoke
-(cd benchmarks/<NN-name>/harness && ./run.sh test)
-bash tools/workload_tests/run_common.sh              # shared lifecycle + framed-TCP regressions (benchmarks/common)
-gradle --no-daemon -p benchmarks/<NN-name>/app test  # workloads 01–08 (Gradle Kotlin DSL; CI uses Gradle 8.14.3)
-mvn -B -f benchmarks/<NN-name>/app/pom.xml test      # workloads 09–13 (Maven)
+(cd benchmarks/<NN-name>/app && ./mvnw -B test)      # correctness and contract gates
+(cd benchmarks/<NN-name>/harness && ./mvnw -B test)  # harness gates
+./mvnw -B -f benchmarks/common/pom.xml test          # shared lifecycle and framed-TCP regressions
+./mvnw -B -f tools/loadgen/pom.xml test              # open-loop load generator self-test
 ```
 
-`run.sh` scripts compile with plain `javac` and download pinned jars from Maven Central with `curl`. They are smoke entry points; authoritative orchestration goes through `benchctl`. The experiment files are JSON written with a `.yaml` extension (JSON is valid YAML), so the controller needs no YAML library.
+On Windows use `mvnw.cmd` and `benchctl.cmd` in place of `./mvnw` and `./benchctl`. The experiment files are JSON written with a `.yaml` extension (JSON is valid YAML), so the controller needs no YAML library.
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `benchctl`, `tools/benchctl*.py` | Controller: runtime discovery, capability probes, planning, execution, validation, comparison, reporting |
+| `benchctl`, `benchctl.cmd`, `mvnw`, `mvnw.cmd` | Launchers only. They build and run the Java controller or the Maven wrapper; they contain no logic |
+| `tools/benchctl/` | The controller (Java 17): runtime discovery, capability probes, planning, Tier 2 engine, lanes, statistics, comparison, HTML report, hygiene gate, JDK fetch |
 | `tools/loadgen/` | Shared open-loop, coordinated-omission-safe HdrHistogram load generator |
-| `tools/telemetry.py`, `tools/compare_results.py` | Application-process telemetry; bootstrap-CI comparison |
+| `tools/testkit/`, `tools/lifecycle/`, `tools/smoke/` | Test-side helpers shared by the workload Maven builds |
 | `benchmarks/NN-*/app` | Workload application (never imports harness code) |
 | `benchmarks/NN-*/app/contract/` | The only interface between app and harness (OpenAPI/schemas) |
 | `benchmarks/NN-*/harness` | Workload-specific harness |
+| `benchmarks/NN-*/tier2.json` | Tier 2 contract: build, correctness gate, launch class, identity endpoint, request mix |
 | `benchmarks/common/` | Shared app-side utilities: JSON, process identity/port publication, owned child-JVM lifecycle, bounded persistent TCP sessions |
 | `schemas/` | Versioned experiment, runtime and result JSON schemas |
-| `experiments/` | Reproducible experiment manifests |
+| `experiments/` | Reproducible experiment manifests (`tier2-matrix.yaml` is the Tier 2 matrix) |
 | `results/` | Generated output — gitignored, never committed |
 
 ## Truth rules (non-negotiable)
@@ -66,15 +72,16 @@ mvn -B -f benchmarks/<NN-name>/app/pom.xml test      # workloads 09–13 (Maven)
 ## Engineering rules
 
 - Shared measurement infrastructure is written once (controller/loadgen), not copied into each harness. Clone benchmark 01's Tier 2 engine to another workload only after that workload has equivalent correctness, process identity and telemetry.
+- The controller is Java. Do not add Python, shell or other interpreters for controller logic. The launchers and `mvnw` wrappers are the only scripts, and they stay logic-free.
 - Never apply a JVM flag or collector without probing that the runtime supports it. Plan JDK/GC combinations from discovered capabilities and each workload's `min_jdk`/`max_jdk`.
-- Child JVMs (`benchmarks/common`): bind loopback only, use ephemeral ports, verify PID + run token + role on readiness, set heap explicitly, and always reap children and temp files on failure or shutdown. Shared code must compile on Java 17.
+- Child JVMs (`benchmarks/common`): bind loopback only, use ephemeral ports, verify PID + run token + role on readiness, set heap explicitly, and always reap children and temp files on failure or shutdown. Shared code must compile on Java 17. Only workload 00's application code targets Java 8 bytecode.
 - Pin every dependency and tool version. Never commit build outputs, downloaded jars, logs, PIDs, JFRs or results.
-- A command called `test` must run tests. Don't fake a Gradle wrapper with a `javac` script.
-- Executable scripts (`benchctl`, `run.sh`, `tools/**/*.sh`) must keep their executable bit in git (`git update-index --chmod=+x`); CI calls them directly.
+- A command called `test` must run tests. Every module's `mvnw test` is the authoritative check.
+- Launchers (`benchctl`, `mvnw`) must keep their executable bit in git (`git update-index --chmod=+x`). CI also calls them through `sh`, so a checkout without the bit still runs.
 - Don't add `CLAUDE.md`/`STATUS.md`-style files; the hygiene check rejects them. Status belongs in `IMPLEMENTATION_STATUS.md` and `catalog.json`.
 
 ## Git workflow and done
 
 - Branch from `main`, open a PR; never push to `main`.
-- Before pushing: controller unit tests, `check_repository.py`, all four `benchctl validate` runs, and `run.sh test` for every workload you touched.
+- Before pushing: controller unit tests, `./benchctl hygiene`, every `./benchctl validate` run, and `mvnw test` for every module you touched.
 - If a change alters a workload's real capability, update its tier in `catalog.json`, its `IMPLEMENTATION_NOTES.md` and `IMPLEMENTATION_STATUS.md` in the same PR. Keep PR plans and checklists in the PR description, not in this file.

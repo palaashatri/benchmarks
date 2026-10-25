@@ -12,10 +12,12 @@ public final class BenchmarkApp {
     public static void main(String[] args) throws Exception {
         Map<String, String> opts = parse(args);
         if (args.length == 1 && args[0].chars().allMatch(Character::isDigit)) {
+            com.palaashatri.bench.common.RuntimeInfo.watchParent();
             new MiniHttpServer(BENCHMARK).start(Integer.parseInt(args[0]));
             return;
         }
         if (opts.containsKey("server")) {
+            com.palaashatri.bench.common.RuntimeInfo.watchParent();
             new MiniHttpServer(BENCHMARK).start(Integer.parseInt(opts.getOrDefault("port", "8080")));
             return;
         }

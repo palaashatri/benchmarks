@@ -1,0 +1,2 @@
+# deliberately malformed: unknown placeholder
+1	GET	/x/${nope:1:2}

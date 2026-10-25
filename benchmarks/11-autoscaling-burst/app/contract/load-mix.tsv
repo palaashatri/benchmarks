@@ -1,0 +1,3 @@
+# Weighted request templates (weight, method, path, body). Generated for the open-loop engine.
+95	POST	/api/v1/catalog/search	{"query":"load-${int:0:999}","work_ms":1}
+5	GET	/api/v1/metrics/scaling

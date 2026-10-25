@@ -1,2 +1,0 @@
--Xlog:gc*,jit+compilation=info
--XX:StartFlightRecording=settings=profile,dumponexit=true

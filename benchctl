@@ -1,4 +1,7 @@
 #!/usr/bin/env sh
+# Starts the Java controller. All logic is in tools/benchctl; this file only builds the jar and runs it.
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec python3 "$ROOT/tools/benchctl_main.py" "$@"
+sh "$ROOT/mvnw" -q -B -f "$ROOT/tools/benchctl/pom.xml" -DskipTests package
+JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
+exec "$JAVA" -jar "$ROOT/tools/benchctl/target/benchctl.jar" "$@"

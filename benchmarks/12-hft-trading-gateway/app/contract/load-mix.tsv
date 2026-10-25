@@ -1,0 +1,5 @@
+# Order flow for the HFT gateway (weight, method, path, body). Submissions cross the book;
+# status and cancel reads hit a random order id, so both found and unknown orders are exercised.
+60	POST	/orders	{"symbol":"${pick:ALPHA|BRAVO|CHARLIE|DELTA}","side":"${pick:BUY|SELL}","quantity":${int:1:100},"price_nanos":${int:100:200}}
+25	GET	/orders/ord-${int:1:200000}
+15	DELETE	/orders/ord-${int:1:200000}

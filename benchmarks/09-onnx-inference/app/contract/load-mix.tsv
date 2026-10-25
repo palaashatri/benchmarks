@@ -1,0 +1,4 @@
+# Classification traffic for the ONNX service (weight, method, path, body). Features are drawn from
+# the range the seeded network was tested on; health reads keep the mix realistic.
+90	POST	/api/v1/inference/classify	{"features":[${float:-3:3},${float:-3:3},${float:-3:3},${float:-3:3}]}
+10	GET	/api/v1/inference/health

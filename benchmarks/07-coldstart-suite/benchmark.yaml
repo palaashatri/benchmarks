@@ -5,9 +5,10 @@
   "lane":"feature",
   "min_jdk":21,
   "max_jdk":25,
-  "implementation":"isolated child JVM process-to-health measurement using the selected Java executable",
+  "implementation":"child-JVM process-to-health under the default class-data archive, with CDS off, and with a dynamic AppCDS archive; probed per mode, measured one child at a time, times recorded by the application",
+  "modes":["default","no-cds","appcds"],
   "measurement_valid":false,
-  "invalid_reasons":["CDS and AppCDS experiment matrix is not implemented","process launch noise is not statistically controlled"],
-  "correctness_command":"cd app && ./run.sh test",
-  "operations":["POST /api/v1/coldstart/measure","GET /api/v1/jfr/stats"]
+  "invalid_reasons":["no controller startup lane: each sample is not a controlled process restart with repetitions, host preflight or page-cache control","measurements are taken on an uncontrolled host"],
+  "correctness_command":"cd app && ./mvnw -B test",
+  "operations":["POST /api/v1/coldstart/measure","GET /api/v1/coldstart/modes","GET /api/v1/coldstart/samples","GET /api/v1/jfr/stats"]
 }

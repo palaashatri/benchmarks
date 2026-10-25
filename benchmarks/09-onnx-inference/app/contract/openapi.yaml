@@ -1,29 +1,37 @@
 openapi: 3.0.3
 info:
   title: ONNX Inference Service contract
-  version: 0.2.0
+  version: 0.3.0
+  description: >-
+    Every response reports `mode` and `onnx_session_active` for the engine that ran:
+    `onnx-runtime` with a live session, or `java-fallback` in the dependency-free build.
 paths:
   /health:
     get:
       responses:
-        '200': {description: healthy}
+        '200': {description: service status, mode and onnx_session_active}
   /metrics:
     get:
       responses:
-        '200': {description: prometheus metrics}
-  /actuator/health:
+        '200': {description: prometheus text metrics}
+  /runtime:
     get:
       responses:
-        '200': {description: actuator health}
-  /actuator/prometheus:
-    get:
-      responses:
-        '200': {description: actuator prometheus metrics}
+        '200': {description: pid, run token, java version, vm name and mode}
   /api/v1/inference/health:
     get:
       responses:
-        '200': {description: Read inference health}
+        '200': {description: inference health, mode and onnx_session_active}
   /api/v1/inference/classify:
     post:
+      requestBody:
+        description: either a 4-feature vector or free text (hashed to 4 features)
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - {type: object, required: [features], properties: {features: {type: array, minItems: 4, maxItems: 4, items: {type: number}}}}
+                - {type: object, required: [text], properties: {text: {type: string}}}
       responses:
-        '200': {description: Classify text with local model}
+        '200': {description: class, label, confidence, inference_ms, mode and onnx_session_active}
+        '405': {description: only POST is accepted}

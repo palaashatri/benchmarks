@@ -18,11 +18,11 @@ Routes implemented:
 - `GET /api/v1/health` — includes `simd_width` and `species`
 - `GET /metrics` / `GET /actuator/prometheus` — Prometheus text format
 
-`build.gradle.kts` updated:
+build (Gradle era, since replaced by Maven) updated:
 - `--add-modules jdk.incubator.vector` added to compiler args and `applicationDefaultJvmArgs`
 - `--enable-preview` added (required on JDK 21 host)
 
-`run.sh` (app) updated:
+`app` Maven build updated:
 - `javac` invocation: `--add-modules jdk.incubator.vector` (no `--release` flag; host is JDK 25 where FFM is stable/non-preview)
 - `java` invocation: `--add-modules=jdk.incubator.vector`
 - Smoke routes updated to `/api/v1/health` and `/api/v1/inference`
@@ -40,13 +40,7 @@ Routes implemented:
 - `mode_kpis`: `vector_ops_per_ms`, `scalar_baseline_ms`, `simd_speedup_ratio` (all 0 as placeholders)
 - REQUESTS updated to hit `/api/v1/inference`, `/api/v1/inference/scalar`, `/api/v1/health`, `/metrics`
 
-`harness/run.sh`: passes `--threads 8 --runs 3` to the harness java invocation.
-
-`docker-compose.yml`: Grafana service extended with `GF_SECURITY_ADMIN_PASSWORD=admin` env and provisioning volume mounts.
-
-Grafana provisioning files created:
-- `harness/grafana/provisioning/datasources/prometheus.yaml`
-- `harness/grafana/provisioning/dashboards/dashboards.yaml`
+harness Maven test: passes `--threads 8 --runs 3` to the harness java invocation.
 
 ## Dependencies added
 
@@ -69,6 +63,10 @@ None — `jdk.incubator.vector` and `java.lang.foreign` are built-in JDK 21 modu
 
 ## Deviations from spec
 
-- `--release 21` flag dropped from the run.sh javac invocation because `--enable-preview` requires it to match the host JDK version (host is JDK 25). The Gradle build retains `options.release.set(21)` for Gradle-driven builds.
-- `--enable-preview` added alongside `--add-modules` in Gradle build. Panama FFM is final in JDK 22+; `--enable-preview` is harmless on JDK 25.
+- `--release 21` flag dropped from the earlier javac invocation because `--enable-preview` requires it to match the host JDK version (host is JDK 25). The Gradle build retains `options.release.set(21)` for Gradle-driven builds.
+- `--enable-preview` added alongside `--add-modules` in the Gradle-era build. Panama FFM is final in JDK 22+; `--enable-preview` is harmless on JDK 25.
 - `mode_kpis` values are structural zeros. Populating them with live SIMD-vs-scalar timing ratios requires routing response-body parsing through the harness, which is left for a later iteration.
+
+## Tier 2 measurement
+
+The Tier 2 engine drives both inference paths through `tier2.json`. The contract declares the preview flags (`--enable-preview --add-modules=jdk.incubator.vector`) that the JVM must be started with, so they are part of the measured configuration. The mix is 90 percent vectorised requests and 10 percent scalar requests.

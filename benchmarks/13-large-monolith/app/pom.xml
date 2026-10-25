@@ -7,18 +7,87 @@
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
+  <repositories>
+    <repository>
+      <id>central</id>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <releases><enabled>true</enabled><checksumPolicy>fail</checksumPolicy></releases>
+      <snapshots><enabled>false</enabled></snapshots>
+    </repository>
+  </repositories>
+  <pluginRepositories>
+    <pluginRepository>
+      <id>central</id>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <releases><enabled>true</enabled><checksumPolicy>fail</checksumPolicy></releases>
+      <snapshots><enabled>false</enabled></snapshots>
+    </pluginRepository>
+  </pluginRepositories>
+  <dependencies>
+        <dependency>
+          <groupId>org.junit.jupiter</groupId>
+          <artifactId>junit-jupiter</artifactId>
+          <version>5.10.2</version>
+          <scope>test</scope>
+        </dependency>
+  </dependencies>
   <build>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-compiler-plugin</artifactId>
-        <version>3.13.0</version>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution><id>generated-graph-sources</id><phase>generate-sources</phase>
+            <goals><goal>add-source</goal></goals>
+            <configuration><sources>
+              <source>${project.build.directory}/generated-sources/graph</source>
+              <source>${project.basedir}/../../common/src/main/java</source>
+            </sources></configuration>
+          </execution>
+                      <execution><id>testkit-test-sources</id><phase>generate-test-sources</phase>
+                <goals><goal>add-test-source</goal></goals>
+                <configuration><sources>
+                  <source>${project.basedir}/../../../tools/testkit/src/main/java</source>
+                </sources></configuration>
+              </execution>
+            </executions>
       </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
-        <configuration><mainClass>com.palaashatri.bench.b13.app.BenchmarkApp</mainClass></configuration>
+        <executions>
+          <execution><id>generate-graph</id><phase>generate-sources</phase><goals><goal>exec</goal></goals>
+            <configuration><executable>java</executable><workingDirectory>${project.basedir}</workingDirectory>
+              <arguments>
+                <argument>tools/GenerateGraph.java</argument>
+                <argument>--out</argument>
+                <argument>${project.build.directory}/generated-sources/graph</argument>
+              </arguments>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+              <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <version>3.2.5</version>
+          </plugin>
+          <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution><id>runtime-classpath</id><phase>prepare-package</phase><goals><goal>build-classpath</goal></goals>
+            <configuration><outputFile>${project.build.directory}/classpath.txt</outputFile></configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

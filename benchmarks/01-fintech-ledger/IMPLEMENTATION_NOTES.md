@@ -15,7 +15,7 @@ Replaced the stub MiniHttpServer.java with a real JDBC + HikariCP + Micrometer i
 
 ## Key dependencies added
 
-The app/run.sh was modified to download JARs from Maven Central at runtime:
+The Maven build downloads the pinned JARs from Maven Central:
 - com.h2database:h2:2.2.224
 - com.zaxxer:HikariCP:5.1.0
 - org.slf4j:slf4j-api:2.0.9 + slf4j-simple:2.0.9
@@ -36,4 +36,4 @@ PASS
 
 - The micrometer prometheus package in 1.13.6 is `io.micrometer.prometheusmetrics` (not `io.micrometer.registry.prometheus`). Imports adjusted accordingly.
 - `gc_pause_p99_ms` shows 0 in the smoke run (20 requests not enough to trigger a GC cycle visible via MXBean); `rss_mb` = 105 satisfies the "at least one real KPI" requirement.
-- The app/run.sh needed modification to download and include JARs on the javac/java classpath (the original script had no classpath support). The harness/run.sh was not modified (harness has no external deps).
+- The Maven build puts the downloaded JARs on the test classpath. The harness has no external dependencies.

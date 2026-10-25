@@ -10,12 +10,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Owns a child from spawn through readiness, failure and termination. */
@@ -42,6 +46,15 @@ public final class ChildJvm implements AutoCloseable {
 
     /** The timeout includes port discovery and the process-identity handshake. */
     public static ChildJvm start(String mainClass, String role, String runToken, Map<String, String> variables, Duration timeout) throws IOException {
+        return start(mainClass, role, runToken, variables, List.of(), timeout);
+    }
+
+    /**
+     * As {@link #start(String, String, String, Map, Duration)}, with the child's own JVM options. The
+     * options precede the classpath, so they can select a collector, a CDS archive or a shared-class mode.
+     */
+    public static ChildJvm start(String mainClass, String role, String runToken, Map<String, String> variables,
+                                 List<String> jvmOptions, Duration timeout) throws IOException {
         Path directory = Files.createTempDirectory("bench-child-");
         ChildJvm child = null;
         try {
@@ -49,6 +62,8 @@ public final class ChildJvm implements AutoCloseable {
             var command = new ArrayList<String>();
             command.add(RuntimeInfo.javaExecutable().toString());
             command.add("-Xms16m"); command.add("-Xmx128m");
+            command.addAll(inheritedJvmOptions());
+            command.addAll(jvmOptions);
             command.add("-cp"); command.add(classPath(mainClass));
             command.add(mainClass); command.add("0");
             ProcessBuilder builder = new ProcessBuilder(command);
@@ -72,6 +87,28 @@ public final class ChildJvm implements AutoCloseable {
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             throw new IOException("child " + role + " readiness failed: " + failure.getMessage() + "\n" + logs, failure);
         }
+    }
+
+    /**
+     * JVM options that the parent passes to every child it starts, read from {@code BENCH_CHILD_JVM_OPTIONS}
+     * (a JSON object with an {@code options} array). The engine uses this to give each child its own GC log,
+     * so process-tree telemetry covers the children as well as the gateway.
+     */
+    static List<String> inheritedJvmOptions() {
+        String text = System.getenv("BENCH_CHILD_JVM_OPTIONS");
+        if (text == null || text.isBlank()) return List.of();
+        Object options = Json.parseObject(text).get("options");
+        List<String> result = new ArrayList<>();
+        if (options instanceof List<?> items) {
+            for (Object item : items) result.add(String.valueOf(item));
+        }
+        return result;
+    }
+
+    /** Identity of every child this process still owns, so the parent's /runtime can list its children. */
+    public static List<Map<String, Object>> describeLive() {
+        return LIVE.stream().filter(ChildJvm::alive).map(ChildJvm::identity)
+                .sorted(Comparator.comparingLong(item -> ((Number) item.get("pid")).longValue())).toList();
     }
 
     private static String classPath(String mainClass) throws Exception {
@@ -123,14 +160,25 @@ public final class ChildJvm implements AutoCloseable {
     }
 
     /** Idempotently terminate, forcibly terminate if needed, reap and remove files. */
-    @Override public void close() {
+    @Override public void close() { stop(Duration.ofSeconds(2)); }
+
+    /**
+     * Terminate the child, allowing {@code grace} for a clean exit before forcing it. The first request is the
+     * end of the child's stdin: {@link RuntimeInfo#watchParent()} turns that into {@code System.exit}, so shutdown
+     * hooks run and a child that writes state on exit (for example a dynamic CDS archive) finishes writing it.
+     * Windows {@code destroy()} terminates the process without that exit, so it is only the fallback.
+     */
+    public void stop(Duration grace) {
         if (!closed.compareAndSet(false, true)) return;
         boolean interrupted = Thread.interrupted();
-        process.destroy();
+        closeInput();
         try {
-            if (!process.waitFor(2, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                process.waitFor(2, TimeUnit.SECONDS);
+            if (!process.waitFor(grace.toMillis(), TimeUnit.MILLISECONDS)) {
+                process.destroy();
+                if (!process.waitFor(2, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    process.waitFor(2, TimeUnit.SECONDS);
+                }
             }
         } catch (InterruptedException interruption) {
             interrupted = true;
@@ -139,8 +187,25 @@ public final class ChildJvm implements AutoCloseable {
             catch (InterruptedException again) { interrupted = true; }
         } finally {
             LIVE.remove(this);
+            awaitExit();
             delete(directory);
             if (interrupted) Thread.currentThread().interrupt();
+        }
+    }
+
+    private void closeInput() {
+        try { process.getOutputStream().close(); }
+        catch (IOException ignored) { /* The child has already exited or closed its input. */ }
+    }
+
+    /** Windows keeps a child's files locked until the child has fully exited, so wait for that before deleting them. */
+    private void awaitExit() {
+        try {
+            process.onExit().get(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interruption) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException | TimeoutException ignored) {
+            // A child that will not exit is reported by the directory cleanup below.
         }
     }
 
@@ -153,15 +218,26 @@ public final class ChildJvm implements AutoCloseable {
         } catch (IOException ignored) { return ""; }
     }
     private static void delete(Path directory) {
-        // Close directory handles before removing their directories (Windows
-        // and some mounted filesystems reject deletion while traversal is open).
-        java.util.List<Path> entries;
-        try (var paths = Files.walk(directory)) {
-            entries = paths.sorted(java.util.Comparator.reverseOrder()).toList();
-        } catch (IOException ignored) { return; }
-        for (Path path : entries) {
-            try { Files.deleteIfExists(path); }
-            catch (IOException failure) { System.err.println("child cleanup failed for " + path + ": " + failure.getMessage()); }
+        // Remove children before parents (Windows and some mounted filesystems reject deleting a directory that
+        // still holds a file). A file released a moment ago can stay locked briefly, so retry for a short while.
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (true) {
+            java.util.List<Path> entries;
+            try (var paths = Files.walk(directory)) {
+                entries = paths.sorted(java.util.Comparator.reverseOrder()).toList();
+            } catch (IOException ignored) { return; }
+            IOException failure = null;
+            for (Path path : entries) {
+                try { Files.deleteIfExists(path); }
+                catch (IOException locked) { failure = locked; }
+            }
+            if (failure == null) return;
+            if (System.nanoTime() > deadline) {
+                System.err.println("child cleanup failed for " + directory + ": " + failure.getMessage());
+                return;
+            }
+            try { Thread.sleep(50); }
+            catch (InterruptedException interruption) { Thread.currentThread().interrupt(); return; }
         }
     }
 }

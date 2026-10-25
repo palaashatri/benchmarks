@@ -9,15 +9,28 @@ permissions:
 
 jobs:
   loadgen:
-    runs-on: ubuntu-latest
+    name: loadgen (${{ matrix.os }}, JDK ${{ matrix.java }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        java: ['17', '21']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Compile and self-test open-loop HdrHistogram generator
-        run: bash tools/loadgen/run.sh test
+          java-version: ${{ matrix.java }}
+      - name: Diagnose the Maven wrapper checksum on macOS
+        if: runner.os == 'macOS'
+        run: |
+          curl -fL -o "$RUNNER_TEMP/mvn.zip" https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/3.9.11/apache-maven-3.9.11-bin.zip
+          ls -l "$RUNNER_TEMP/mvn.zip"
+          shasum -a 256 "$RUNNER_TEMP/mvn.zip"
+          command -v sha256sum shasum wget curl unzip || true
+      - name: Compile and self-test the coordinated-omission-safe HdrHistogram generator
+        run: sh ./mvnw -B -f tools/loadgen/pom.xml test

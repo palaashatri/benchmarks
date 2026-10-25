@@ -1,29 +1,44 @@
 openapi: 3.0.3
 info:
-  title: Coldstart Function Suite contract
-  version: 0.2.0
+  title: Coldstart Suite contract
+  version: 0.3.0
+  description: Startup measurements of child JVMs under three class-sharing modes. Times are measured by the application, not the client.
 paths:
   /health:
     get:
       responses:
-        '200': {description: healthy}
+        '200': {description: process is up}
+  /runtime:
+    get:
+      responses:
+        '200': {description: pid, run token, role, Java version, VM name, collectors and JVM input arguments of this process}
   /metrics:
     get:
       responses:
-        '200': {description: prometheus metrics}
-  /actuator/health:
+        '200': {description: Prometheus text exposition}
+  /api/v1/coldstart/modes:
     get:
       responses:
-        '200': {description: actuator health}
-  /actuator/prometheus:
-    get:
-      responses:
-        '200': {description: actuator prometheus metrics}
-  /functions:
-    get:
-      responses:
-        '200': {description: List local functions}
-  /invoke/{function}:
+        '200': {description: "the three modes with their JVM options and probed availability; AppCDS archive size and build time"}
+  /api/v1/coldstart/measure:
     post:
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mode: {type: string, enum: [default, no-cds, appcds], default: default}
       responses:
-        '200': {description: Invoke a function}
+        '200': {description: "process-to-health time of one child JVM, with the child's own runtime identity and JVM arguments"}
+        '400': {description: unknown mode or malformed body}
+        '500': {description: the child JVM did not report ready, or the mode is unavailable}
+  /api/v1/coldstart/samples:
+    get:
+      responses:
+        '200': {description: "measured times per mode (ms, in the order taken) and failure counts"}
+  /api/v1/jfr/stats:
+    get:
+      responses:
+        '200': {description: "this process's uptime, loaded classes and JIT time (null when the JVM does not report it)"}

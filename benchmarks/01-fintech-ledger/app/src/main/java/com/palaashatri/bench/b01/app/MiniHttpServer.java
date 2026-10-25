@@ -87,6 +87,7 @@ public final class MiniHttpServer {
         server.createContext("/accounts/", this::accounts);
         server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
         server.start();
+        publishPort(server.getAddress().getPort());
         System.out.printf("{\"event\":\"started\",\"benchmark\":\"%s\",\"port\":%d,\"pid\":%d}%n",
                 benchmark, port, ProcessHandle.current().pid());
     }
@@ -110,7 +111,33 @@ public final class MiniHttpServer {
                 + ",\"java_version\":\"" + escape(System.getProperty("java.version")) + "\""
                 + ",\"java_vendor\":\"" + escape(System.getProperty("java.vendor")) + "\""
                 + ",\"vm_name\":\"" + escape(System.getProperty("java.vm.name")) + "\""
-                + ",\"input_arguments\":" + arguments + "}");
+                + ",\"input_arguments\":" + arguments + ",\"jvm_args\":" + arguments
+                + ",\"collectors\":" + collectorNames() + "}");
+    }
+
+    private static String collectorNames() {
+        StringBuilder names = new StringBuilder("[");
+        boolean first = true;
+        for (java.lang.management.GarbageCollectorMXBean bean : ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (!first) names.append(',');
+            names.append('"').append(escape(bean.getName())).append('"');
+            first = false;
+        }
+        return names.append(']').toString();
+    }
+
+    /** Publishes the bound port for the shared test and harness owners, as the shared children do. */
+    private static void publishPort(int port) throws IOException {
+        String name = System.getenv("BENCH_PORT_FILE");
+        if (name == null || name.isEmpty()) return;
+        java.nio.file.Path target = java.nio.file.Path.of(name);
+        java.nio.file.Path temporary = target.resolveSibling(target.getFileName() + "." + java.util.UUID.randomUUID() + ".tmp");
+        try {
+            java.nio.file.Files.writeString(temporary, Integer.toString(port));
+            java.nio.file.Files.move(temporary, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            java.nio.file.Files.deleteIfExists(temporary);
+        }
     }
 
     private void metrics(HttpExchange exchange) throws IOException {

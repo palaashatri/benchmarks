@@ -32,12 +32,6 @@ Upgraded from sequential for-loop to concurrent `ExecutorService`-based load:
 - Collects: GC total collection time (`ManagementFactory.getGarbageCollectorMXBeans()`), RSS (`ps -o rss=`), CPU (`OperatingSystemMXBean.getProcessCpuLoad()`).
 - `mode_kpis` reports `events_per_second`, `window_latency_ms`, `consumer_lag`.
 
-### Grafana (`harness/grafana/`)
-
-- Created `provisioning/datasources/prometheus.yaml` (Prometheus data source auto-wired).
-- Created `provisioning/dashboards/dashboards.yaml` (file provider pointing at `/var/lib/grafana/dashboards`).
-- Updated `dashboard.json` with 4 panels: Event Throughput, Consumer Lag, Active Windows, Request Rate.
-- Updated `docker-compose.yml` to mount provisioning and dashboard volumes; sets `GF_SECURITY_ADMIN_PASSWORD=admin`.
 
 ## Dependencies Added
 
@@ -46,7 +40,7 @@ None. The app uses only JDK standard library (`com.sun.net.httpserver`, `java.ut
 ## Smoke Test Result
 
 ```
-REQUESTS=40 ./run.sh test
+./mvnw -B test
 ```
 
 Output (final run of 3):
@@ -61,4 +55,8 @@ All 40 requests succeeded across 3 runs.
 ## Deviations from Spec
 
 - Virtual threads used for HttpServer executor (per spec) and consumer threads (spec said "virtual threads on startup").
-- The `run.sh` SMOKE_GETS/SMOKE_POSTS paths were updated to match the new API routes (`/api/v1/events`, `/api/v1/windows/sensor-1`, `/api/v1/lag`).
+- The Maven smoke test SMOKE_GETS/SMOKE_POSTS paths were updated to match the new API routes (`/api/v1/events`, `/api/v1/windows/sensor-1`, `/api/v1/lag`).
+
+## Tier 2 measurement
+
+The Tier 2 engine drives the processor through `tier2.json` (event ingestion and lag reads). The windows are event-time tumbling windows over an in-memory queue. There is no durable state or broker, so the numbers describe the processor alone.

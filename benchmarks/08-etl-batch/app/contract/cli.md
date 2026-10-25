@@ -1,6 +1,6 @@
 # CLI contract for ETL Batch Job
 
-Entrypoint: `BenchmarkApp` via `./gradlew run --args="..."` or Maven exec.
+Entrypoint: `BenchmarkApp` via the Maven exec goal.
 
 Supported benchmark operations:
 - `--in PATH --out PATH --impl single-jvm`
