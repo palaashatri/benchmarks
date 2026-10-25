@@ -326,14 +326,17 @@ def aggregate_metric(values: list[float], seed: int) -> dict[str, Any]:
             "values": [],
         }
     mean = statistics.fmean(values)
-    standard_deviation = statistics.stdev(values) if len(values) > 1 else 0.0
+    # A single sample has no measurable spread; report null rather than a fake zero.
+    standard_deviation = statistics.stdev(values) if len(values) > 1 else None
     return {
         "count": len(values),
         "mean": mean,
         "median": statistics.median(values),
         "standard_deviation": standard_deviation,
         "median_absolute_deviation": median_absolute_deviation(values),
-        "coefficient_of_variation": standard_deviation / mean if mean else None,
+        "coefficient_of_variation": (
+            standard_deviation / mean if standard_deviation is not None and mean else None
+        ),
         "bootstrap_mean_ci": bootstrap_ci(values, seed=seed),
         "values": values,
     }
