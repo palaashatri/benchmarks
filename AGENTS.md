@@ -85,3 +85,13 @@ On Windows use `mvnw.cmd` and `benchctl.cmd` in place of `./mvnw` and `./benchct
 - Branch from `main`, open a PR; never push to `main`.
 - Before pushing: controller unit tests, `./benchctl hygiene`, every `./benchctl validate` run, and `mvnw test` for every module you touched.
 - If a change alters a workload's real capability, update its tier in `catalog.json`, its `IMPLEMENTATION_NOTES.md` and `IMPLEMENTATION_STATUS.md` in the same PR. Keep PR plans and checklists in the PR description, not in this file.
+
+## Independent benchmark tooling and low-memory efficiency
+
+**Benchmarks is an independent OpenJDK workload and QA harness, not a SLOPOS/PARAMA desktop application candidate.** It must **not** be bundled, added to a first-party Software catalog (even as an optional developer app), made into a shell/background service or assigned an OS-specific GUI/launcher integration milestone. Its purpose is reproducible JVM performance and correctness measurement across supported systems, without dependency on a particular desktop environment. Neither Linux SLOPOS nor future native PARAMA is a product target solely because it appears in the broader ecosystem.
+
+- **Preserve the existing contract:** The controller/workloads retain their declared OpenJDK, OS, collector and architecture matrices, correctness checks, reproducible comparison logic and no-observer-bias rules. A hypothetical future PARAMA Java runtime or Linux ABI is an *external platform possibility*, not a PARAMA port commitment for Benchmarks.
+- **Raspberry Pi Zero 2 W efficiency as a useful measurement profile:** when a compatible AArch64 Java runtime is actually available, allow opt-in **edge-small** fixture profiles with bounded heaps, streamed/sampled metrics, capped log/output, explicit warm-up and cooldown, thermal/frequency/microSD reporting, and observer-overhead measurements. Never run workloads automatically in background; don't mistake Pi data for like-for-like comparisons with dissimilar x86 hardware or unsupported GC/JDK combinations.
+- **Evidence:** Record exact JDK/GC/flags, commit and dataset hash, OS/ABI/hardware, process tree PSS/peak RSS, whole-system `MemAvailable`, heap and collector memory, observed harness CPU/I/O overhead, temperature/throttling, timing distributions, timeout/OOM and unsupported settings. A Pi-specific PASS requires an actual Pi Zero 2 W run; otherwise mark `NOT_RUN` or `BLOCKED`.
+- **Scope:** Optimization here means a trustworthy low-overhead benchmark tool, *not* a newly packaged SLOPOS/PARAMA application. Do not weaken workload semantics or currently required test gates.
+

@@ -102,3 +102,10 @@ Unknown measurements are `null`, never fake zeroes. `benchctl compare` rejects i
 ```
 
 Workload `mvnw test` commands are listed under Quick start. CI runs the controller, shared modules and every workload on Ubuntu, Windows and macOS.
+
+## Standalone benchmark tooling and Raspberry Pi efficiency
+
+**Benchmarks is excluded from SLOPOS/PARAMA bundled desktop applications and the curated first-party Software catalog**, including optional developer-app entries. It remains an independent command-line/controller and test-workload project; no desktop launcher, OS-specific UI or PARAMA port is planned by this requirement. It can run on any platform independently meeting its documented Java/runtime requirements.
+
+A future Raspberry Pi Zero 2 W **edge-small** measurement profile should reduce harness overhead, bound logs and memory, report thermal throttling and JVM/GC support accurately, and preserve a reproducible result. These are **not current verified Pi capabilities**. See [AGENTS.md](AGENTS.md#independent-benchmark-tooling-and-low-memory-efficiency).
+
